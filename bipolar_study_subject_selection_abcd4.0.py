@@ -73,6 +73,14 @@ ldemo = ldemo.groupby(['subjectkey', 'interview_age'], as_index=False).apply(lam
 
 # %% [markdown]
 # # Subject Selection
+
+# %% [markdown]
+# There are up to 3 time points for these interviews:
+
+# %%
+bp.eventname.value_counts(sort=False)
+
+# %% [markdown]
 # Our largest number of subjects to select is the number who completed at least one survey from the 3 time points:
 
 # %%
