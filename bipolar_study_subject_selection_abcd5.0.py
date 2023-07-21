@@ -266,8 +266,11 @@ plt.show()
 # %%
 (month_offsets > lockdown_month_offset).value_counts()
 
+# %%
+dmri[dmri.subjectkey.isin(included_subjects)].groupby('subjectkey').time_index.agg(lambda x : (x!=1).all()).sum()
+
 # %% [markdown]
-# This is great. Of the 190 selected BP subjects, 61 of them had their second scan after lockdown measures, and 108 of them before. That means we can _ignore_ lockdown effects by restricting to those 108 and it's not a serious loss at all. And we can also _observe_ lockdown effects if we want to, because 61 is a decent number of positive post-lockdown cases to have.
+# This is great. Of the 190 selected BP subjects, 61 of them had their second scan after lockdown measures, and 108 of them before. (And 21 of them did not have a 2-year follow-up scan at all, but just had baseline and 4-year follow-up ones.) That means we can _ignore_ lockdown effects by restricting to those 108 and it's not a serious loss at all. And we can also _observe_ lockdown effects if we want to, because 61 is a decent number of positive post-lockdown cases to have.
 
 # %% [markdown]
 # Let's now check the same for the mental health interview data.
