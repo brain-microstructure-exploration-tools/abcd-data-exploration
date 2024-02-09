@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.1
+#       jupytext_version: 1.14.1
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -29,8 +29,9 @@ import numpy as np
 # %%
 # Edit these appropriately
 
-fmriresults01_path = "./fmriresults01.txt"
-abcd_y_lt_path = "./abcd_y_lt.csv"
+fmriresults01_path = "/home/ebrahim/data/abcd/Package_1224700/fmriresults01.txt"
+abcd_y_lt_path = "/home/ebrahim/data/abcd/abcd-5.0-tabular-data-extracted/core/abcd-general/abcd_y_lt.csv"
+mri_y_adm_info_path = "/home/ebrahim/data/abcd/abcd-5.0-tabular-data-extracted/core/imaging/mri_y_adm_info.csv"
 
 # %%
 df = pd.read_csv(fmriresults01_path, delimiter='\t', low_memory=False, dtype={'interview_age':int}, skiprows=[1])
@@ -42,27 +43,51 @@ lt = pd.read_csv(abcd_y_lt_path)
 lt = lt[lt.src_subject_id.isin(dmri_subjects)]
 lt.interview_age = lt.interview_age.astype(int)
 
+mri_info = pd.read_csv(mri_y_adm_info_path)
+
 df = df.merge(
-    lt[['src_subject_id', 'interview_age', 'site_id_l']], 
+    lt[['src_subject_id', 'interview_age', 'site_id_l', 'eventname']], 
     on=['src_subject_id', 'interview_age'], 
     how='left'
 )
 
+df = df.merge(
+    mri_info[['src_subject_id', 'eventname', 'mri_info_manufacturer']], 
+    on=['src_subject_id', 'eventname'], 
+    how='left'
+)
+
+df = df.dropna(subset = ['mri_info_manufacturer'])
+
+df = df.reset_index(drop=True)
+
 # %%
-# For each subject we pick one of their DMRI images at random.
+# For each subject we pick one of their DMRI images (i.e. time points) at random.
+
+subject_to_selected_timepoint = df.groupby('src_subject_id').apply(lambda g : np.random.choice(g.eventname.unique()))
+
+subject_to_selected_timepoint.name = 'selected_eventname'
+df_one_time_per_subject = df.merge(
+    subject_to_selected_timepoint,
+    on="src_subject_id",
+)
+df_one_time_per_subject = df_one_time_per_subject[df_one_time_per_subject.eventname == df_one_time_per_subject.selected_eventname]
+
+# %%
 # Then from there for each site we pick number_to_sample_from_each_site images.
 # When a site doesn't have that many images we just take all the images that it does have.
+# (Care is taken ensure that the sample is not biased by the fact that the phillips scans are split
+# over multiple files and hence have multiple rows per scan. This is why it's so messy.)
 
 number_to_sample_from_each_site = 15
 
-df_one_row_per_subject = df.groupby('src_subject_id').sample(1)
-
-site_freqs = df_one_row_per_subject.site_id_l.value_counts()
+site_freqs = df_one_time_per_subject.groupby('src_subject_id').apply(lambda g : g.iloc[0]).site_id_l.value_counts()
 sites_to_take_all_from = site_freqs[site_freqs<number_to_sample_from_each_site].index.tolist()
 
-data_from_sites_we_took_all_from = df_one_row_per_subject[df_one_row_per_subject.site_id_l.isin(sites_to_take_all_from)]
+data_from_sites_we_took_all_from = df_one_time_per_subject[df_one_time_per_subject.site_id_l.isin(sites_to_take_all_from)]
 
-data_from_sites_we_sampled_from = df_one_row_per_subject[~(df_one_row_per_subject.site_id_l.isin(sites_to_take_all_from))].groupby('site_id_l').sample(number_to_sample_from_each_site)
+subjects_from_sites_we_sampled_from = df_one_time_per_subject[~(df_one_time_per_subject.site_id_l.isin(sites_to_take_all_from))].groupby('src_subject_id').apply(lambda g : g.iloc[0]).groupby('site_id_l').sample(number_to_sample_from_each_site).index
+data_from_sites_we_sampled_from = df_one_time_per_subject[df_one_time_per_subject.src_subject_id.isin(subjects_from_sites_we_sampled_from)]
 
 df_sample = pd.concat([data_from_sites_we_took_all_from,data_from_sites_we_sampled_from], axis=0)
 
@@ -73,4 +98,4 @@ with open('sample_s3_links.txt', 'w') as f:
 
 # Save table that maps filename to site id so we can group images by site if needed later
 df_sample['filename'] = df_sample.derived_files.apply(lambda s : s.split('/')[-1])
-df_sample[['filename', 'site_id_l', 'fmriresults01_id']].to_csv('sample_site_table.csv')
+df_sample[['filename', 'site_id_l', 'mri_info_manufacturer', 'fmriresults01_id',]].to_csv('sample_site_table.csv')
