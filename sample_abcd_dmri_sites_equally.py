@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.14.1
+#       jupytext_version: 1.15.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -25,13 +25,15 @@
 # %%
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 # %%
 # Edit these appropriately
 
-fmriresults01_path = "/home/ebrahim/data/abcd/Package_1224700/fmriresults01.txt"
-abcd_y_lt_path = "/home/ebrahim/data/abcd/abcd-5.0-tabular-data-extracted/core/abcd-general/abcd_y_lt.csv"
-mri_y_adm_info_path = "/home/ebrahim/data/abcd/abcd-5.0-tabular-data-extracted/core/imaging/mri_y_adm_info.csv"
+data_root_path = Path("/data/ebrahim-data/abcd")
+fmriresults01_path = data_root_path/"Package_1224700/fmriresults01.txt"
+abcd_y_lt_path = data_root_path/"abcd-5.0-tabular-data-extracted/core/abcd-general/abcd_y_lt.csv"
+mri_y_adm_info_path = data_root_path/"abcd-5.0-tabular-data-extracted/core/imaging/mri_y_adm_info.csv"
 
 # %%
 df = pd.read_csv(fmriresults01_path, delimiter='\t', low_memory=False, dtype={'interview_age':int}, skiprows=[1])
@@ -52,7 +54,7 @@ df = df.merge(
 )
 
 df = df.merge(
-    mri_info[['src_subject_id', 'eventname', 'mri_info_manufacturer']], 
+    mri_info[['src_subject_id', 'eventname', 'mri_info_manufacturer', 'mri_info_manufacturersmn']], 
     on=['src_subject_id', 'eventname'], 
     how='left'
 )
