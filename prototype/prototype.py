@@ -19,14 +19,15 @@
 from dipy.io.image import load_nifti, save_nifti
 import csv
 import numpy as np
+import random
 import re
 import os
 
 # Set global parameters to match your environment
-gor_images = "/data2/ABCD/gor-images"
-coregistered_images = os.path.join(gor_images, "coregistered-images")
-tabular_data = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
-core_data = os.path.join(tabular_data, "core")
+gor_image_directory = "/data2/ABCD/gor-images"
+coregistered_images_directory = os.path.join(gor_image_directory, "coregistered-images")
+tabular_data_directory = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
+core_directory = os.path.join(tabular_data_directory, "core")
 
 
 # +
@@ -119,13 +120,29 @@ def get_items(csv_row_dicts, key_dict):
     return response
 
 
-# -
+# +
+list_of_image_files = random.sample(
+    get_list_of_image_files(coregistered_images_directory), 10
+)
+image_data = get_data_from_image_files(list_of_image_files)
 
-list_of_files = get_list_of_image_files(coregistered_images)[:10]
-image_data = get_data_from_image_files(list_of_files)
-file = os.path.join(core_data, "physical-health/ph_y_bld.csv")
-csv_raw = csv_file_to_raw_data(file)
+file_mh_y_ksads_ss = os.path.join(
+    core_directory, "mental-health/mh_y_ksads_ss.csv"
+)  # ksads_1_5_t (anhedonia), something with good entropy!!!
+file_abcd_y_lt = os.path.join(
+    core_directory, "abcd-general/abcd_y_lt.csv"
+)  # site_id_l, rel_family_id, interview_age
+file_abcd_p_demo = os.path.join(
+    core_directory, "abcd-general/abcd_p_demo.csv"
+)  # demo_gender_id_v2(_l)?
+file_gish_p_gi = os.path.join(
+    core_directory, "gender-identity-sexual-health/gish_p_gi.csv"
+)  # demo_gender_id_v2(_l)?
+
+csv_file = os.path.join(core_directory, "physical-health/ph_y_bld.csv")
+csv_raw = csv_file_to_raw_data(csv_file)
 row_dicts = csv_raw_to_row_dicts(csv_raw)
+# -
 
 if True:
     print(f"{len(image_data) = }")
