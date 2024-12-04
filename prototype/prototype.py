@@ -32,9 +32,10 @@ import csv
 import functools
 import math
 import numpy as np
+import os
+import pandas as pd
 import random
 import re
-import os
 
 # Set global parameters to match your environment
 gor_image_directory = "/data2/ABCD/gor-images"
@@ -102,36 +103,16 @@ def get_list_of_image_files(directory):
     return response
 
 
-def fix_filename_parsing(filename_parsing_dict):
-    if "src_subject_id" in filename_parsing_dict.keys():
-        filename_parsing_dict["src_subject_id"] = re.sub(
-            r"^NDAR", "NDAR_", filename_parsing_dict["src_subject_id"]
-        )
-    eventname_conversion = {
-        "baselineYear1Arm1": "baseline_year_1_arm_1",
-        "1YearFollowUpYArm1": "1_year_follow_up_y_arm_1",
-        "2YearFollowUpYArm1": "2_year_follow_up_y_arm_1",
-        "3YearFollowUpYArm1": "3_year_follow_up_y_arm_1",
-        "4YearFollowUpYArm1": "4_year_follow_up_y_arm_1",
-    }
-    if "eventname" in filename_parsing_dict.keys():
-        filename_parsing_dict["eventname"] = eventname_conversion[
-            filename_parsing_dict["eventname"]
-        ]
-    return filename_parsing_dict
-
-
-def get_data_from_image_files(list_of_files):
+def parse_image_filenames(list_of_image_files):
     """
-    get_data_from_image_files returns a list of tuples of 5 values:
-    <class 'str'>: full file name
-    <class 'dict'>: a parsing of the file name
-    <class 'numpy.ndarray'>: image data as a numpy array
-    <class 'numpy.ndarray'>: some other numpy array (transform?)
-    <class 'nibabel.nifti1.Nifti1Image'>: an object that can be modified and written to file as a .nii.gz file
+    Returns a pandas DataFrame.
+    The first column is the filename.  Additional columns indicate how the filename was parsed.
+    For example, run as:
+        df = parse_image_filenames(get_list_of_image_files(coregistered_images_directory))
     """
     filename_pattern = r"gorinput([0-9]+)-modality([0-9]+)-sub-([A-Za-z0-9]+)_ses-([A-Za-z0-9]+)_run-([A-Za-z0-9]+)_([A-Za-z0-9]+)_([A-Za-z0-9]+)-([A-Za-z0-9]+).nii.gz"
-    filename_keys = (
+    filename_keys = [
+        "filename",
         "gorinput",
         "modality",
         "src_subject_id",
@@ -140,100 +121,88 @@ def get_data_from_image_files(list_of_files):
         "image_type",
         "image_subtype",
         "processing",
-    )
-    response = [
-        (file,)
-        + (
-            fix_filename_parsing(
-                dict(
-                    zip(
-                        filename_keys,
-                        list(re.match(filename_pattern, os.path.basename(file)).groups()),
-                    )
-                )
-            ),
-        )
-        + load_nifti(file, return_img=True)
-        for file in list_of_files
     ]
+
+    response = pd.DataFrame(
+        [
+            [filename, *list(re.match(filename_pattern, os.path.basename(filename)).groups())]
+            for filename in list_of_image_files
+        ],
+        columns=filename_keys,
+    )
+    # Fix parsing of src_subject_id
+    response["src_subject_id"] = [
+        re.sub(r"^NDAR", "NDAR_", subject) for subject in response["src_subject_id"]
+    ]
+    # Fix parsing of eventname
+    eventname_conversion = {
+        "baselineYear1Arm1": "baseline_year_1_arm_1",
+        "1YearFollowUpYArm1": "1_year_follow_up_y_arm_1",
+        "2YearFollowUpYArm1": "2_year_follow_up_y_arm_1",
+        "3YearFollowUpYArm1": "3_year_follow_up_y_arm_1",
+        "4YearFollowUpYArm1": "4_year_follow_up_y_arm_1",
+    }
+    response["eventname"] = [eventname_conversion[event] for event in response["eventname"]]
     return response
 
 
-def select_images(image_data, key_dict):
-    # Currently we support only two keys
-    assert all([key == "src_subject_id" or key == "eventname" for key, value in key_dict.items()])
-    response = [
-        image_row
-        for image_row in image_data
-        if all(item in image_row.items() for item in key_dict.items())
-    ]
+def get_data_from_image_files(list_of_files):
+    """
+    get_data_from_image_files returns a list of tuples of 4 values:
+    <class 'str'>: full file name
+    <class 'numpy.ndarray'>: image data as a numpy array
+    <class 'numpy.ndarray'>: some other numpy array (transform?)
+    <class 'nibabel.nifti1.Nifti1Image'>: an object that can be modified and written to file as a .nii.gz file
+    """
+    response = [(file,) + load_nifti(file, return_img=True) for file in list_of_files]
     return response
 
 # +
 # Functions for reading and selecting data from csv files
 
 
-def _csv_file_to_list_of_lists(filename):
-    """
-    _csv_file_to_list_of_lists returns a list of lists of str in row-major order
-    """
-    with open(filename, mode="r") as file:
-        csv_reader = csv.reader(file)
-        response = [row for row in csv_reader]
-    return response
+def csv_file_to_dataframe(filename):
+    return pd.read_csv(filename)
 
 
-def _list_of_lists_to_row_dicts(list_of_lists):
-    """
-    _list_of_lists_to_row_dicts converts a list of lists of str, in row-major order,
-    to a list of dict of str.  Each dict is formed by using the first row (column headers)
-    as keys and a given data row as values of type str.
-    """
-    column_headers = list_of_lists[0]
-    response = [
-        {column_headers[i]: row_value for i, row_value in enumerate(row)}
-        for row in list_of_lists[1:]
+# Select rows from data frame, to handle a common case where the direct pandas interface would be complicated
+def select_rows_of_dataframe(df, query_dict):
+    # Each key of query_dict is a column header of the df dataframe.
+    # Each value of query_dict is a list of allowed values.
+    # A row will be selected only if each of these columns has one of the allowed keys
+    assert all(key in df.columns for key in query_dict.keys())
+    # Old code: each of query_dict.values() is just a single value, not a list of values:
+    # rows = df[
+    #     functools.reduce(lambda x, y: x & y, [df[key] = value for key, value in query_dict.items()])
+    # ]
+    rows = df[
+        functools.reduce(
+            lambda x, y: x & y,
+            [
+                functools.reduce(lambda x, y: x | y, [df[key] == value for value in values])
+                for key, values in query_dict.items()
+            ],
+        )
     ]
-    return response
-
-
-def csv_file_to_row_dicts(file):
-    return _list_of_lists_to_row_dicts(_csv_file_to_list_of_lists(file))
-
-
-def select_items(list_of_row_dicts, key_dict):
-    """
-    select_items returns all rows (i.e., top-level elements) of list_of_row_dicts, a list of dict of str,
-    for which the row (a dict) contains all of the items in key_dict.
-    """
-    response = [
-        row_dict
-        for row_dict in list_of_row_dicts
-        if all(item in row_dict.items() for item in key_dict.items())
-    ]
-    return response
+    return rows
 
 # +
 # Functions for computing summary statistics for KSADS csv data
 
 
-def row_dicts_to_counts_for_each_column(row_dicts):
-    column_dict = {key: dict() for row in row_dicts for key in row.keys()}
-    for row in row_dicts:
-        for column_header, value in row.items():
-            # 555 = "Not administered in the assessment",
-            # so assume the same as "".  (TODO: Right?)
-            value = "" if value == "555" else value
-            # 888 = "Question not asked due to primary question response (branching logic)",
-            # so assume it was obviously a "0".  (TODO: Right?)
-            value = "0" if value == "888" else value
-            column_dict[column_header][value] = column_dict[column_header].get(value, 0) + 1
-    # Sort each value dict by its keys for easier reading
-    column_dict = {
-        key: dict(sorted(value.items(), key=lambda item: item[0], reverse=False))
-        for key, value in column_dict.items()
+def data_frame_value_counts(df):
+    # Returns a dict:
+    #     Each key is a column name
+    #     Each value is a dict:
+    #         Each key of this is a value that occurs in the column.
+    #         The corresponding value is the number of occurrences.
+    for column in df.columns:
+        if bool(re.match("ksads_\d", column)):
+            df.loc[df[column] == 555, column] = np.nan
+            df.loc[df[column] == 888, column] = 0
+    return {
+        column: dict(df[column].value_counts(dropna=False).astype(int)) for column in df.columns
     }
-    return column_dict
 
 
 def entropy_of_column_counts(column_counts):
@@ -249,21 +218,21 @@ def entropy_of_column_counts(column_counts):
     return entropy
 
 
+def ksads_keys_only(all_columns):
+    return {key: value for key, value in all_columns.items() if bool(re.match("ksads_\d", key))}
+
+
 def entropy_of_all_columns(all_columns):
-    return {
-        key: entropy_of_column_counts(value)
-        for key, value in all_columns.items()
-        if bool(re.match("ksads_\d", key))
-    }
+    return {key: entropy_of_column_counts(value) for key, value in all_columns.items()}
 
 
 def find_interesting_entropies(file_mh_y_ksads_ss):
     # Find some KSADS data columns with high entropy.
-    row_dicts_mh_y_ksads_ss = csv_file_to_row_dicts(file_mh_y_ksads_ss)
+    df_mh_y_ksads_ss = csv_file_to_dataframe(file_mh_y_ksads_ss)
     print("Read done")
 
-    counts_for_each_column_mh_y_ksads_ss = row_dicts_to_counts_for_each_column(
-        row_dicts_mh_y_ksads_ss
+    counts_for_each_column_mh_y_ksads_ss = ksads_keys_only(
+        data_frame_value_counts(df_mh_y_ksads_ss)
     )
     print("Column counting done")
 
@@ -272,7 +241,7 @@ def find_interesting_entropies(file_mh_y_ksads_ss):
     sorted_entropies = {
         key: (value, counts_for_each_column_mh_y_ksads_ss[key])
         for key, value in sorted_entropies.items()
-        if bool(re.match("ksads_\d", key))
+        # if bool(re.match("ksads_\d", key))
     }
     print("Entropy calculation done")
     return sorted_entropies
@@ -354,49 +323,48 @@ ksads_vars = [[file_mh_y_ksads_ss, interesting_ksads]]
 # +
 # Find all images for which we have tabular data
 
-set_of_pairs_for_each_key = (
-    {(row["src_subject_id"], row["eventname"]) for row in row_dict if row[key] != ""}
-    for tablename, list_of_keys in independent_vars
-    for row_dict in (csv_file_to_row_dicts(os.path.join(core_directory, tablename)),)
-    for key in list_of_keys
-)
-set_intersection = functools.reduce(set.intersection, set_of_pairs_for_each_key)
-print(f"{len(set_intersection) = }")
-print(f"{set(list(set_intersection)[:20]) = }")
-# TODO: If necessary, try fewer independent_vars so that we get more images
+join_keys = ["src_subject_id", "eventname"]
+
+
+def get_table_drop_nulls(tablename, list_of_keys):
+    df = csv_file_to_dataframe(os.path.join(core_directory, tablename))[list_of_keys]
+    df.replace("", pd.NA, inplace=True)
+    df.dropna(inplace=True)
+    print(df.head())
+    return df
+
+
+def merge_dataframes_for_keys(independent_vars):
+    df_generator = (
+        get_table_drop_nulls(tablename, [*join_keys, *list_of_keys])
+        for tablename, list_of_keys in independent_vars
+        if list_of_keys
+    )
+    df_all_keys = next(df_generator)
+    for df_next in df_generator:
+        df_all_keys = pd.merge(
+            df_all_keys, df_next, on=join_keys, how="inner", validate="one_to_one"
+        )
+    return df_all_keys
+
+
+def merge_tabular_information(independent_vars, coregistered_images_directory):
+    df_all_keys = merge_dataframes_for_keys(independent_vars)
+
+    list_of_image_files = get_list_of_image_files(coregistered_images_directory)
+    df_image_information = parse_image_filenames(list_of_image_files)
+    df_all_images = pd.merge(
+        df_all_keys,
+        df_image_information[[*join_keys, "image_subtype"]],
+        on=join_keys,
+        how="inner",
+        validate="one_to_many",
+    )
+    return df_all_images
+
+
+tabular_information = merge_tabular_information(independent_vars, coregistered_images_directory)
+print(f"{len(tabular_information) = }")
 # -
-
-# A random subset of all image files
-list_of_image_files = random.sample(get_list_of_image_files(coregistered_images_directory), 10)
-image_data = get_data_from_image_files(list_of_image_files)
-print(f"file name parsing = {[image[1] for image in image_data]!r}")
-
-if False:
-    print(f"{len(image_data) = }")
-    print(f"{type(image_data[0]) = }")
-    print(f"{len(image_data[0]) = }")
-    print("types(image_data[0]) = ", [type(e) for e in image_data[0]])
-    print(f"{image_data[0][0] = }")
-    print(f"{image_data[0][1] = }")
-    print(f"{image_data[0][2].shape = }")
-    print(f"{image_data[0][3].shape = }")
-if False:
-    print(f"{type(list_of_lists) = }")
-    print(f"{type(list_of_lists[0]) = }")
-    # print("csv_data row lengths = ", [len(row) for row in list_of_lists])
-    # print("Column 0 = ", [row[0] for row in list_of_lists])
-    print("Corner value = ", list_of_lists[0][0])
-if False:
-    print(f"{type(row_dicts) = }")
-    key0 = 0
-    value0 = row_dicts[key0]
-    key1 = next(iter(value0))
-    value1 = value0[key1]
-    print(f"row_dicts[{key0!r}][{key1!r}] = {value1!r}")
-    # print(f"{row_dicts[0] = }")
-    dict_of_keys = {key1: value1}
-    print(f"{dict_of_keys = }")
-    items = select_items(row_dicts, dict_of_keys)
-    print(f"{len(items) = }")
 
 
