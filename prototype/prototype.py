@@ -36,6 +36,8 @@ import os
 import pandas as pd
 import random
 import re
+import statsmodels.api as sm
+import time
 
 # Set global parameters to match your environment
 gor_image_directory = "/data2/ABCD/gor-images"
@@ -44,31 +46,33 @@ tabular_data_directory = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory = os.path.join(tabular_data_directory, "core")
 
 # +
-# The locations of some useful csv data columns
+# Useful inputs to our task
 
-# These files live in `core_directory`
+# independent_vars is the locations of some useful csv data columns. These files live in `core_directory`
 
 independent_vars = [
     [
         "abcd-general/abcd_y_lt.csv",
         [
-            "site_id_l",  # Site ID at each event
+            # TODO: Convert site_id_l to one-hot so that we can use it.  Currently it is str
+            # "site_id_l",  # Site ID at each event
             # TODO: We are including participants with no siblings in study at the expense of losing family ID.  Do this better.
             # "rel_family_id",  # Participants belonging to the same family share a family ID.  They will differ between data releases
-            "interview_age",  # Participant's age in month at start of the event
-        ],
-    ],
-    [
-        "abcd-general/abcd_p_demo.csv",
-        [
-            "demo_gender_id_v2",  # 1=Male; 2=Female; 3=Trans male; 4=Trans female; 5=Gender queer; 6=Different; 777=Decline to answer; 999=Don't know
-            # "demo_gender_id_v2_l",  # same?
+            "interview_age"  # Participant's age in month at start of the event
         ],
     ],
     [
         "gender-identity-sexual-health/gish_p_gi.csv",
         [
             "demo_gender_id_v2",  # 1=Male; 2=Female; 3=Trans male; 4=Trans female; 5=Gender queer; 6=Different; 777=Decline to answer; 999=Don't know
+            # "demo_gender_id_v2_l",  # same?
+        ],
+    ],
+    [
+        "abcd-general/abcd_p_demo.csv",
+        [
+            # TODO: These duplicate each other and gender-identity-sexual-health/gish_p_gi.csv.  Why?
+            # "demo_gender_id_v2",  # same?
             # "demo_gender_id_v2_l",  # same?
         ],
     ],
@@ -91,6 +95,11 @@ independent_vars = [
 ]
 
 # We'll do KSADS variables once we've computed `interesting_ksads` below
+
+# +
+# Useful global variables
+
+join_keys = ["src_subject_id", "eventname"]
 
 # +
 # Functions for handling image voxel data
@@ -187,6 +196,33 @@ def select_rows_of_dataframe(df, query_dict):
     return rows
 
 # +
+# Function to read and cache KSADS tabular information
+
+
+def clean_ksads_data_frame(df):
+    for column in df.columns:
+        if bool(re.match("ksads_\d", column)):
+            df.loc[df[column] == 555, column] = np.nan
+            df.loc[df[column] == 888, column] = 0
+    return df
+
+
+def ksads_filename_to_dataframe(file_mh_y_ksads_ss, use_cache=True):
+    rebuild_cache = not use_cache
+    try:
+        ksads_filename_to_dataframe.df_mh_y_ksads_ss
+    except AttributeError:
+        rebuild_cache = True
+    if rebuild_cache:
+        print("Begin reading KSADS data file")
+        start = time.time()
+        response = csv_file_to_dataframe(file_mh_y_ksads_ss)
+        response = clean_ksads_data_frame(response)
+        ksads_filename_to_dataframe.df_mh_y_ksads_ss = response
+        print(f"Read KSADS data file in {time.time()-start}s")
+    return ksads_filename_to_dataframe.df_mh_y_ksads_ss
+
+# +
 # Functions for computing summary statistics for KSADS csv data
 
 
@@ -196,10 +232,6 @@ def data_frame_value_counts(df):
     #     Each value is a dict:
     #         Each key of this is a value that occurs in the column.
     #         The corresponding value is the number of occurrences.
-    for column in df.columns:
-        if bool(re.match("ksads_\d", column)):
-            df.loc[df[column] == 555, column] = np.nan
-            df.loc[df[column] == 888, column] = 0
     return {
         column: dict(df[column].value_counts(dropna=False).astype(int)) for column in df.columns
     }
@@ -228,9 +260,7 @@ def entropy_of_all_columns(all_columns):
 
 def find_interesting_entropies(file_mh_y_ksads_ss):
     # Find some KSADS data columns with high entropy.
-    df_mh_y_ksads_ss = csv_file_to_dataframe(file_mh_y_ksads_ss)
-    print("Read done")
-
+    df_mh_y_ksads_ss = ksads_filename_to_dataframe(file_mh_y_ksads_ss)
     counts_for_each_column_mh_y_ksads_ss = ksads_keys_only(
         data_frame_value_counts(df_mh_y_ksads_ss)
     )
@@ -246,91 +276,77 @@ def find_interesting_entropies(file_mh_y_ksads_ss):
     print("Entropy calculation done")
     return sorted_entropies
 
-
 # +
 # Find interesting KSADS data
 
-file_mh_y_ksads_ss = "mental-health/mh_y_ksads_ss.csv"
-if True:
-    # User requests that we re-compute `interesting_ksads`
-    if False:
-        # User requests that we re-compute `sorted_entropies`
-        try:
-            del sorted_entropies
-        except NameError:
-            pass
-    try:
-        sorted_entropies
-        print("Using cached value for sorted_entropies")
-    except NameError:
+
+def find_interesting_ksads():
+    file_mh_y_ksads_ss = "mental-health/mh_y_ksads_ss.csv"
+    if True:
         full_path = os.path.join(core_directory, file_mh_y_ksads_ss)
         # find_interesting_entropies is slow
         sorted_entropies = find_interesting_entropies(full_path)
-    number_wanted = 20
-    print(f"Distribution details: {list(sorted_entropies.items())[:number_wanted]}")
-    interesting_ksads = list(sorted_entropies.keys())[:number_wanted]
-    print(f"{interesting_ksads = }")
-else:
-    # With "555" and "888" both going to "", the interesting_ksads computation gives:
-    interesting_ksads = [
-        "ksads_22_142_t",  # Symptom - Insomnia, Past
-        "ksads_22_970_t",  # Diagnosis - SLEEP PROBLEMS, Past
-        "ksads_2_11_t",  # Symptom - Explosive Irritability, Past
-        "ksads_1_2_t",  # Symptom - Depressed Mood, Past
-        "ksads_2_13_t",  # Symptom - Decreased Need for Sleep, Past
-        "ksads_1_6_t",  # Symptom - Anhedonia, Past
-        "ksads_22_141_t",  # Symptom - Insomnia, Present
-        "ksads_22_969_t",  # Diagnosis - SLEEP PROBLEMS, Present
-        "ksads_2_8_t",  # Symptom - Elevated Mood, Past
-        "ksads_10_46_t",  # Symptom - Excessive worries more days than not Past
-        "ksads_1_4_t",  # Symptom - Irritability, Past
-        "ksads_2_10_t",  # Symptom - ExplosiveIrritability, PresentNext
-        "ksads_8_31_t",  # Symptom - Fear of Social Situations, Past
-        "ksads_23_146_t",  # Symptom - Wishes/Better off dead, Past
-        "ksads_23_957_t",  # Diagnosis - SuicidalideationPassivePast
-        "ksads_1_5_t",  # Symptom - Anhedonia, Present
-        "ksads_2_839_t",  # Diagnosis - Unspecified Bipolar and Related Disorder, PAST (F31.9)
-        "ksads_2_833_t",  # Diagnosis - Bipolar I Disorder, most recent past episode manic (F31.1x)
-        "ksads_1_3_t",  # Symptom - Irritability, Present
-        "ksads_1_842_t",  # Diagnosis - Major Depressive Disorder, Past (F32.9)
-    ]
-    # With "555" going to "" and "888" going to "0", the interesting_ksads computation gives:
-    interesting_ksads = [
-        "ksads_1_187_t",  # Symptom - No two month symptom-free interval, Present
-        "ksads_1_188_t",  # Symptom - No two month symptom-free interval, Past
-        "ksads_22_142_t",  # Symptom - Insomnia, Past
-        "ksads_22_970_t",  # Diagnosis - SLEEP PROBLEMS, Past
-        "ksads_2_11_t",  # Symptom - Explosive Irritability, Past
-        "ksads_2_222_t",  # Symptom - Lasting at least 4 days, Past
-        "ksads_1_184_t",  # Symptom - Impairment in functioning due to depression, Past
-        "ksads_1_2_t",  # Symptom - Depressed Mood, Past
-        "ksads_2_13_t",  # Symptom - Decreased Need for Sleep, Past
-        "ksads_1_6_t",  # Symptom - Anhedonia, Past
-        "ksads_1_160_t",  # Symptom - Fatigue, Past
-        "ksads_1_162_t",  # Symptom - Concentration Disturbance, Past
-        "ksads_2_220_t",  # Symptom - Lasting at least one week, Past
-        "ksads_1_156_t",  # Symptom - Insomnia when depressed, Past
-        "ksads_1_174_t",  # Symptom - Psychomotor Agitation in Depressive Disorder, Past
-        "ksads_2_216_t",  # Symptom - Impairment in functioning due to bipolar, Past
-        "ksads_2_208_t",  # Symptom - Psychomotor Agitation in Bipolar Disorder, Past
-        "ksads_2_206_t",  # Symptom - Increased Energy, Past
-        "ksads_22_141_t",  # Symptom - Insomnia, Present
-        "ksads_22_969_t",  # Diagnosis - SLEEP PROBLEMS, Present
-    ]
-
-ksads_vars = [[file_mh_y_ksads_ss, interesting_ksads]]
+        number_wanted = 20
+        interesting_ksads = list(sorted_entropies.keys())[:number_wanted]
+    else:
+        # With "555" and "888" both going to "", the interesting_ksads computation gives:
+        interesting_ksads = [
+            "ksads_22_142_t",  # Symptom - Insomnia, Past
+            "ksads_22_970_t",  # Diagnosis - SLEEP PROBLEMS, Past
+            "ksads_2_11_t",  # Symptom - Explosive Irritability, Past
+            "ksads_1_2_t",  # Symptom - Depressed Mood, Past
+            "ksads_2_13_t",  # Symptom - Decreased Need for Sleep, Past
+            "ksads_1_6_t",  # Symptom - Anhedonia, Past
+            "ksads_22_141_t",  # Symptom - Insomnia, Present
+            "ksads_22_969_t",  # Diagnosis - SLEEP PROBLEMS, Present
+            "ksads_2_8_t",  # Symptom - Elevated Mood, Past
+            "ksads_10_46_t",  # Symptom - Excessive worries more days than not Past
+            "ksads_1_4_t",  # Symptom - Irritability, Past
+            "ksads_2_10_t",  # Symptom - ExplosiveIrritability, PresentNext
+            "ksads_8_31_t",  # Symptom - Fear of Social Situations, Past
+            "ksads_23_146_t",  # Symptom - Wishes/Better off dead, Past
+            "ksads_23_957_t",  # Diagnosis - SuicidalideationPassivePast
+            "ksads_1_5_t",  # Symptom - Anhedonia, Present
+            "ksads_2_839_t",  # Diagnosis - Unspecified Bipolar and Related Disorder, PAST (F31.9)
+            "ksads_2_833_t",  # Diagnosis - Bipolar I Disorder, most recent past episode manic (F31.1x)
+            "ksads_1_3_t",  # Symptom - Irritability, Present
+            "ksads_1_842_t",  # Diagnosis - Major Depressive Disorder, Past (F32.9)
+        ]
+        # With "555" going to "" and "888" going to "0", the interesting_ksads computation gives:
+        interesting_ksads = [
+            "ksads_1_187_t",  # Symptom - No two month symptom-free interval, Present
+            "ksads_1_188_t",  # Symptom - No two month symptom-free interval, Past
+            "ksads_22_142_t",  # Symptom - Insomnia, Past
+            "ksads_22_970_t",  # Diagnosis - SLEEP PROBLEMS, Past
+            "ksads_2_11_t",  # Symptom - Explosive Irritability, Past
+            "ksads_2_222_t",  # Symptom - Lasting at least 4 days, Past
+            "ksads_1_184_t",  # Symptom - Impairment in functioning due to depression, Past
+            "ksads_1_2_t",  # Symptom - Depressed Mood, Past
+            "ksads_2_13_t",  # Symptom - Decreased Need for Sleep, Past
+            "ksads_1_6_t",  # Symptom - Anhedonia, Past
+            "ksads_1_160_t",  # Symptom - Fatigue, Past
+            "ksads_1_162_t",  # Symptom - Concentration Disturbance, Past
+            "ksads_2_220_t",  # Symptom - Lasting at least one week, Past
+            "ksads_1_156_t",  # Symptom - Insomnia when depressed, Past
+            "ksads_1_174_t",  # Symptom - Psychomotor Agitation in Depressive Disorder, Past
+            "ksads_2_216_t",  # Symptom - Impairment in functioning due to bipolar, Past
+            "ksads_2_208_t",  # Symptom - Psychomotor Agitation in Bipolar Disorder, Past
+            "ksads_2_206_t",  # Symptom - Increased Energy, Past
+            "ksads_22_141_t",  # Symptom - Insomnia, Present
+            "ksads_22_969_t",  # Diagnosis - SLEEP PROBLEMS, Present
+        ]
+    # print(f"{interesting_ksads = }")
+    ksads_vars = [file_mh_y_ksads_ss, interesting_ksads]
+    return ksads_vars
 
 # +
 # Find all images for which we have tabular data
-
-join_keys = ["src_subject_id", "eventname"]
 
 
 def get_table_drop_nulls(tablename, list_of_keys):
     df = csv_file_to_dataframe(os.path.join(core_directory, tablename))[list_of_keys]
     df.replace("", pd.NA, inplace=True)
     df.dropna(inplace=True)
-    print(df.head())
     return df
 
 
@@ -350,21 +366,155 @@ def merge_dataframes_for_keys(independent_vars):
 
 def merge_tabular_information(independent_vars, coregistered_images_directory):
     df_all_keys = merge_dataframes_for_keys(independent_vars)
+    independent_keys = set(df_all_keys.columns).difference(set(join_keys))
 
     list_of_image_files = get_list_of_image_files(coregistered_images_directory)
     df_image_information = parse_image_filenames(list_of_image_files)
     df_all_images = pd.merge(
         df_all_keys,
-        df_image_information[[*join_keys, "image_subtype"]],
+        df_image_information[[*join_keys, "image_subtype", "filename"]],
         on=join_keys,
         how="inner",
         validate="one_to_many",
     )
-    return df_all_images
-
-
-tabular_information = merge_tabular_information(independent_vars, coregistered_images_directory)
+    return df_all_images, independent_keys
+# +
+# Load tabular information for keys other than KSADS keys
+start = time.time()
+tabular_information, independent_keys = merge_tabular_information(
+    independent_vars, coregistered_images_directory
+)
+print(f"{independent_keys = }")
 print(f"{len(tabular_information) = }")
+print(f"Total time to load tabular information = {time.time() - start}s")
+
+# Load KSADS information
+file_mh_y_ksads_ss, interesting_ksads = find_interesting_ksads()
+df_mh_y_ksads_ss = ksads_filename_to_dataframe(file_mh_y_ksads_ss)
+
+
 # -
+def use_statsmodel():
+    image_subtypes = list(tabular_information["image_subtype"].unique())
+    an_image_filename = tabular_information["filename"].iloc[0]
+    an_image_shape = get_data_from_image_files([an_image_filename])[0][1].shape
+
+    all_subtypes = {}
+    for image_subtype in image_subtypes:
+        print(f"{image_subtype = }")
+        subtype_information = tabular_information[
+            tabular_information["image_subtype"] == image_subtype
+        ]
+        dict_of_images = {
+            a: b
+            for a, b, c, d in get_data_from_image_files(
+                list(subtype_information["filename"].values)
+            )
+        }
+        all_ksads_keys = {}
+        for ksads_key in interesting_ksads:
+            print(f"  {ksads_key = }")
+            # Process only those images for which we have information for this ksads_key
+            augmented_information = pd.merge(
+                subtype_information,
+                df_mh_y_ksads_ss[[*join_keys, ksads_key]],
+                on=join_keys,
+                how="inner",
+                validate="one_to_one",
+            )
+            print(f"  {len(augmented_information) = }")
+            augmented_information.dropna(inplace=True)
+            print(f"  {len(augmented_information) = }")
+            print(f"  {augmented_information.columns = }")
+            # Now that we know which images we'll need, let's stack them into a single 4-dimensional shape
+            all_images = np.stack(
+                [dict_of_images[filename] for filename in augmented_information["filename"].values]
+            )
+            output_image = np.zeros(an_image_shape)
+            for voxel_location, i in np.ndenumerate(output_image):
+                # voxel_location = (28, 53, 71)  # TODO: Remove me
+                # print(f"    {voxel_location = }")
+                df_y = pd.DataFrame(all_images[:, *voxel_location], columns=["image"])
+                if len(list(df_y["image"].unique())) <= 1:
+                    response = 0.0  # Very bad voxel (despite being perfectly predictable)
+                else:
+                    y = df_y["image"]
+                    X = augmented_information[[*independent_keys, ksads_key]]
+                    X = sm.add_constant(X)  # TODO: Does this affect augmented_information?
+                    # print(f"{type(y) = }")
+                    # print(f"{type(X) = }")
+                    # print(f"{df_y['image'].mean() = }")
+                    # print(f"{df_y['image'].std() = }")
+                    fit = sm.OLS(y, X).fit()
+                    # print(fit.summary())
+                    response = 1 - fit.f_pvalue  # Higher is better
+                output_image[*voxel_location] = response
+            all_ksads_keys[ksads_key] = output_image
+        all_subtypes[image_subtype] = all_ksads_keys
+    return all_subtypes
+# +
+def use_numpy():
+    image_subtypes = list(tabular_information["image_subtype"].unique())
+    an_image_filename = tabular_information["filename"].iloc[0]
+    an_image_shape = get_data_from_image_files([an_image_filename])[0][1].shape
+
+    all_subtypes = {}
+    for image_subtype in image_subtypes:
+        print(f"{image_subtype = }")
+        subtype_information = tabular_information[
+            tabular_information["image_subtype"] == image_subtype
+        ]
+        dict_of_images = {
+            a: b
+            for a, b, c, d in get_data_from_image_files(
+                list(subtype_information["filename"].values)
+            )
+        }
+        all_ksads_keys = {}
+        for ksads_key in interesting_ksads:
+            print(f"  {ksads_key = }")
+            # Process only those images for which we have information for this ksads_key
+            augmented_information = pd.merge(
+                subtype_information,
+                df_mh_y_ksads_ss[[*join_keys, ksads_key]],
+                on=join_keys,
+                how="inner",
+                validate="one_to_one",
+            )
+            augmented_information.dropna(inplace=True)
+            augmented_information["constant"] = 1.0
+
+            print(f"  {len(augmented_information) = }")
+            augmented_information.dropna(inplace=True)
+            print(f"  {len(augmented_information) = }")
+            print(f"  {augmented_information.columns = }")
+
+            # Now that we know which images we'll need, let's stack them into a single 4-dimensional shape
+            all_images = np.stack(
+                [dict_of_images[filename] for filename in augmented_information["filename"].values]
+            )
+
+            X = augmented_information[[*independent_keys, ksads_key]].to_numpy()
+
+            projection_X = X.dot(np.linalg.inv(X.transpose().dot(X)).dot(X.transpose()))
+            kernel = np.eye(len(projection_X)) - projection_X
+            y = all_images.reshape(all_images.shape[0], -1)
+            print(f"{X.shape = }")
+            print(f"{kernel.shape = }")
+            print(f"{y.shape = }")
+            sum_of_squares = ((kernel.dot(y)) * y).sum(axis=0)
+            print(f"{sum_of_squares.shape = }")
+            output_image = -sum_of_squares.reshape(all_images.shape[1:])
+
+            all_ksads_keys[ksads_key] = output_image
+        all_subtypes[image_subtype] = all_ksads_keys
+    return all_subtypes
+
+
+start = time.time()
+subtype_ksadskey_image = use_numpy()
+print(f"Computed all voxels in time {time.time() - start}s")
+# -
+
 
 

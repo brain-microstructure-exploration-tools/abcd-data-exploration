@@ -1,3 +1,4 @@
 dipy
 numpy
 pandas
+statsmodels
