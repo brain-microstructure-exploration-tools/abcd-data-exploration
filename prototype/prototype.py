@@ -41,6 +41,7 @@ import time
 
 # Set global parameters to match your environment
 gor_image_directory = "/data2/ABCD/gor-images"
+white_matter_mask_file = os.path.join(gor_image_directory, "gortemplate0.nii.gz")
 coregistered_images_directory = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory = os.path.join(tabular_data_directory, "core")
@@ -106,8 +107,11 @@ join_keys = ["src_subject_id", "eventname"]
 
 
 def get_list_of_image_files(directory):
+    pattern = r"^gorinput[0-9]{4}-.*\.nii\.gz$"
     response = [
-        os.path.join(directory, file) for file in os.listdir(directory) if file.endswith(".nii.gz")
+        os.path.join(directory, file)
+        for file in os.listdir(directory)
+        if bool(re.match(pattern, file))
     ]
     return response
 
@@ -165,6 +169,14 @@ def get_data_from_image_files(list_of_files):
     """
     response = [(file,) + load_nifti(file, return_img=True) for file in list_of_files]
     return response
+
+
+def get_white_matter_mask(white_matter_mask_file):
+    white_matter_mask_input = get_data_from_image_files([white_matter_mask_file])[0][1]
+    mask_threshold = 0.70
+    white_matter_mask = (white_matter_mask_input >= 0.70).reshape(-1)
+    print(f"{np.sum(white_matter_mask) = }")
+    return white_matter_mask
 
 # +
 # Functions for reading and selecting data from csv files
@@ -286,7 +298,7 @@ def find_interesting_ksads():
         full_path = os.path.join(core_directory, file_mh_y_ksads_ss)
         # find_interesting_entropies is slow
         sorted_entropies = find_interesting_entropies(full_path)
-        number_wanted = 20
+        number_wanted = 3  # TODO: Pick a better number, like 20
         interesting_ksads = list(sorted_entropies.keys())[:number_wanted]
     else:
         # With "555" and "888" both going to "", the interesting_ksads computation gives:
@@ -392,6 +404,9 @@ print(f"Total time to load tabular information = {time.time() - start}s")
 file_mh_y_ksads_ss, interesting_ksads = find_interesting_ksads()
 df_mh_y_ksads_ss = ksads_filename_to_dataframe(file_mh_y_ksads_ss)
 
+# Load voxel mask
+white_matter_mask = get_white_matter_mask(white_matter_mask_file)
+
 
 # -
 def use_statsmodel():
@@ -452,8 +467,7 @@ def use_statsmodel():
             all_ksads_keys[ksads_key] = output_image
         all_subtypes[image_subtype] = all_ksads_keys
     return all_subtypes
-# +
-def use_numpy():
+def use_numpy(white_matter_mask):
     image_subtypes = list(tabular_information["image_subtype"].unique())
     an_image_filename = tabular_information["filename"].iloc[0]
     an_image_shape = get_data_from_image_files([an_image_filename])[0][1].shape
@@ -489,22 +503,25 @@ def use_numpy():
             print(f"  {len(augmented_information) = }")
             print(f"  {augmented_information.columns = }")
 
+            X = augmented_information[[*independent_keys, ksads_key]].to_numpy()
+            kernel = np.linalg.inv(X.transpose().dot(X))
+
             # Now that we know which images we'll need, let's stack them into a single 4-dimensional shape
             all_images = np.stack(
                 [dict_of_images[filename] for filename in augmented_information["filename"].values]
             )
+            y = all_images.reshape(all_images.shape[0], -1)[:, white_matter_mask]
 
-            X = augmented_information[[*independent_keys, ksads_key]].to_numpy()
-
-            projection_X = X.dot(np.linalg.inv(X.transpose().dot(X)).dot(X.transpose()))
-            kernel = np.eye(len(projection_X)) - projection_X
-            y = all_images.reshape(all_images.shape[0], -1)
             print(f"{X.shape = }")
             print(f"{kernel.shape = }")
             print(f"{y.shape = }")
-            sum_of_squares = ((kernel.dot(y)) * y).sum(axis=0)
+
+            X_T_Y = X.transpose().dot(y)
+            sum_of_squares = (y * y).sum(axis=0) - (X_T_Y * kernel.dot(X_T_Y)).sum(axis=0)
             print(f"{sum_of_squares.shape = }")
-            output_image = -sum_of_squares.reshape(all_images.shape[1:])
+            output_image = np.zeros(white_matter_mask.shape)
+            output_image[white_matter_mask] = -sum_of_squares
+            output_image = output_image.reshape(all_images.shape[1:])
 
             all_ksads_keys[ksads_key] = output_image
         all_subtypes[image_subtype] = all_ksads_keys
@@ -512,9 +529,29 @@ def use_numpy():
 
 
 start = time.time()
-subtype_ksadskey_image = use_numpy()
+subtype_ksadskey_image = use_numpy(white_matter_mask)
 print(f"Computed all voxels in time {time.time() - start}s")
-# -
 
+
+print(f"{type(subtype_ksadskey_image) = }")
+print(f"{subtype_ksadskey_image.keys() = }")
+print(f"{type(subtype_ksadskey_image['fa']) = }")
+print(f"{subtype_ksadskey_image['fa'].keys() = }")
+print(f"{type(subtype_ksadskey_image['fa']['ksads_1_187_t']) = }")
+means = np.array(
+    [
+        [float(np.mean(value1.reshape(-1)[white_matter_mask])) for key1, value1 in value0.items()]
+        for key0, value0 in subtype_ksadskey_image.items()
+    ]
+)
+print(f"{means = }")
+stds = np.array(
+    [
+        [float(np.std(value1.reshape(-1)[white_matter_mask])) for key1, value1 in value0.items()]
+        for key0, value0 in subtype_ksadskey_image.items()
+    ]
+)
+print(f"{stds = }")
+print(f"Relative std = {stds/means!r}")
 
 
