@@ -27,6 +27,7 @@
 # Then, once Jupyter is open with this lab notebook, "Change Kernel..." to be "abcd311".
 
 # Import from Python packages
+from typing import Any, Union
 from dipy.io.image import load_nifti, save_nifti
 import csv
 import functools
@@ -40,18 +41,18 @@ import statsmodels.api as sm
 import time
 
 # Set global parameters to match your environment
-gor_image_directory = "/data2/ABCD/gor-images"
-white_matter_mask_file = os.path.join(gor_image_directory, "gortemplate0.nii.gz")
-coregistered_images_directory = os.path.join(gor_image_directory, "coregistered-images")
-tabular_data_directory = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
-core_directory = os.path.join(tabular_data_directory, "core")
+gor_image_directory: str = "/data2/ABCD/gor-images"
+white_matter_mask_file: str = os.path.join(gor_image_directory, "gortemplate0.nii.gz")
+coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
+tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
+core_directory: str = os.path.join(tabular_data_directory, "core")
 
 # +
 # Useful inputs to our task
 
 # independent_vars is the locations of some useful csv data columns. These files live in `core_directory`
 
-independent_vars = [
+independent_vars: list[list[Union[str, list[str]]]] = [
     [
         "abcd-general/abcd_y_lt.csv",
         [
@@ -100,15 +101,15 @@ independent_vars = [
 # +
 # Useful global variables
 
-join_keys = ["src_subject_id", "eventname"]
+join_keys: list[str] = ["src_subject_id", "eventname"]
 
 # +
 # Functions for handling image voxel data
 
 
-def get_list_of_image_files(directory):
-    pattern = r"^gorinput[0-9]{4}-.*\.nii\.gz$"
-    response = [
+def get_list_of_image_files(directory: str) -> list[str]:
+    pattern: str = r"^gorinput[0-9]{4}-.*\.nii\.gz$"
+    response: list[str] = [
         os.path.join(directory, file)
         for file in os.listdir(directory)
         if bool(re.match(pattern, file))
@@ -116,15 +117,17 @@ def get_list_of_image_files(directory):
     return response
 
 
-def parse_image_filenames(list_of_image_files):
+def parse_image_filenames(list_of_image_files: list[str]):
     """
     Returns a pandas DataFrame.
     The first column is the filename.  Additional columns indicate how the filename was parsed.
     For example, run as:
         df = parse_image_filenames(get_list_of_image_files(coregistered_images_directory))
     """
-    filename_pattern = r"gorinput([0-9]+)-modality([0-9]+)-sub-([A-Za-z0-9]+)_ses-([A-Za-z0-9]+)_run-([A-Za-z0-9]+)_([A-Za-z0-9]+)_([A-Za-z0-9]+)-([A-Za-z0-9]+).nii.gz"
-    filename_keys = [
+    filename_pattern: str = (
+        r"gorinput([0-9]+)-modality([0-9]+)-sub-([A-Za-z0-9]+)_ses-([A-Za-z0-9]+)_run-([A-Za-z0-9]+)_([A-Za-z0-9]+)_([A-Za-z0-9]+)-([A-Za-z0-9]+).nii.gz"
+    )
+    filename_keys: list[str] = [
         "filename",
         "gorinput",
         "modality",
@@ -136,19 +139,20 @@ def parse_image_filenames(list_of_image_files):
         "processing",
     ]
 
-    response = pd.DataFrame(
+    response: pd.core.frame.DataFrame = pd.DataFrame(
         [
             [filename, *list(re.match(filename_pattern, os.path.basename(filename)).groups())]
             for filename in list_of_image_files
         ],
         columns=filename_keys,
     )
+
     # Fix parsing of src_subject_id
     response["src_subject_id"] = [
         re.sub(r"^NDAR", "NDAR_", subject) for subject in response["src_subject_id"]
     ]
     # Fix parsing of eventname
-    eventname_conversion = {
+    eventname_conversion: dict[str, str] = {
         "baselineYear1Arm1": "baseline_year_1_arm_1",
         "1YearFollowUpYArm1": "1_year_follow_up_y_arm_1",
         "2YearFollowUpYArm1": "2_year_follow_up_y_arm_1",
@@ -159,7 +163,7 @@ def parse_image_filenames(list_of_image_files):
     return response
 
 
-def get_data_from_image_files(list_of_files):
+def get_data_from_image_files(list_of_files: list[str]) -> list[Any]:
     """
     get_data_from_image_files returns a list of tuples of 4 values:
     <class 'str'>: full file name
@@ -171,10 +175,10 @@ def get_data_from_image_files(list_of_files):
     return response
 
 
-def get_white_matter_mask(white_matter_mask_file):
-    white_matter_mask_input = get_data_from_image_files([white_matter_mask_file])[0][1]
-    mask_threshold = 0.70
-    white_matter_mask = (white_matter_mask_input >= 0.70).reshape(-1)
+def get_white_matter_mask(white_matter_mask_file: str):
+    white_matter_mask_input: np.ndarray = get_data_from_image_files([white_matter_mask_file])[0][1]
+    mask_threshold: float = 0.70
+    white_matter_mask: np.ndarray = (white_matter_mask_input >= 0.70).reshape(-1)
     print(f"{np.sum(white_matter_mask) = }")
     return white_matter_mask
 
@@ -182,12 +186,12 @@ def get_white_matter_mask(white_matter_mask_file):
 # Functions for reading and selecting data from csv files
 
 
-def csv_file_to_dataframe(filename):
+def csv_file_to_dataframe(filename: str) -> pd.core.frame.DataFrame:
     return pd.read_csv(filename)
 
 
 # Select rows from data frame, to handle a common case where the direct pandas interface would be complicated
-def select_rows_of_dataframe(df, query_dict):
+def select_rows_of_dataframe(df: pd.core.frame.DataFrame, query_dict: dict[str, str]):
     # Each key of query_dict is a column header of the df dataframe.
     # Each value of query_dict is a list of allowed values.
     # A row will be selected only if each of these columns has one of the allowed keys
@@ -196,7 +200,7 @@ def select_rows_of_dataframe(df, query_dict):
     # rows = df[
     #     functools.reduce(lambda x, y: x & y, [df[key] = value for key, value in query_dict.items()])
     # ]
-    rows = df[
+    rows: pd.core.frame.DataFrame = df[
         functools.reduce(
             lambda x, y: x & y,
             [
@@ -211,7 +215,7 @@ def select_rows_of_dataframe(df, query_dict):
 # Function to read and cache KSADS tabular information
 
 
-def clean_ksads_data_frame(df):
+def clean_ksads_data_frame(df: pd.core.frame.DataFrame) -> pd.core.frame.DataFrame:
     for column in df.columns:
         if bool(re.match("ksads_\d", column)):
             df.loc[df[column] == 555, column] = np.nan
@@ -219,16 +223,18 @@ def clean_ksads_data_frame(df):
     return df
 
 
-def ksads_filename_to_dataframe(file_mh_y_ksads_ss, use_cache=True):
-    rebuild_cache = not use_cache
+def ksads_filename_to_dataframe(
+    file_mh_y_ksads_ss: str, use_cache: bool = True
+) -> pd.core.frame.DataFrame:
+    rebuild_cache: bool = not use_cache
     try:
         ksads_filename_to_dataframe.df_mh_y_ksads_ss
     except AttributeError:
         rebuild_cache = True
     if rebuild_cache:
         print("Begin reading KSADS data file")
-        start = time.time()
-        response = csv_file_to_dataframe(file_mh_y_ksads_ss)
+        start: float = time.time()
+        response: pd.core.frame.DataFrame = csv_file_to_dataframe(file_mh_y_ksads_ss)
         response = clean_ksads_data_frame(response)
         ksads_filename_to_dataframe.df_mh_y_ksads_ss = response
         print(f"Read KSADS data file in {time.time()-start}s")
@@ -238,21 +244,22 @@ def ksads_filename_to_dataframe(file_mh_y_ksads_ss, use_cache=True):
 # Functions for computing summary statistics for KSADS csv data
 
 
-def data_frame_value_counts(df):
+def data_frame_value_counts(df: pd.core.frame.DataFrame) -> dict[str, dict[str, np.int64]]:
     # Returns a dict:
     #     Each key is a column name
     #     Each value is a dict:
     #         Each key of this is a value that occurs in the column.
     #         The corresponding value is the number of occurrences.
-    return {
+    response: dict[str, dict[str, np.int64]] = {
         column: dict(df[column].value_counts(dropna=False).astype(int)) for column in df.columns
     }
+    return response
 
 
-def entropy_of_column_counts(column_counts):
+def entropy_of_column_counts(column_counts) -> float:
     assert all(value >= 0 for value in column_counts.values())
     total_count = sum(column_counts.values())
-    entropy = sum(
+    entropy: float = sum(
         [
             count / total_count * math.log2(total_count / count)
             for count in column_counts.values()
@@ -262,11 +269,11 @@ def entropy_of_column_counts(column_counts):
     return entropy
 
 
-def ksads_keys_only(all_columns):
+def ksads_keys_only(all_columns: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in all_columns.items() if bool(re.match("ksads_\d", key))}
 
 
-def entropy_of_all_columns(all_columns):
+def entropy_of_all_columns(all_columns) -> dict[str, float]:
     return {key: entropy_of_column_counts(value) for key, value in all_columns.items()}
 
 
@@ -406,67 +413,66 @@ df_mh_y_ksads_ss = ksads_filename_to_dataframe(file_mh_y_ksads_ss)
 
 # Load voxel mask
 white_matter_mask = get_white_matter_mask(white_matter_mask_file)
+# +
+# def use_statsmodel():
+#     image_subtypes = list(tabular_information["image_subtype"].unique())
+#     an_image_filename = tabular_information["filename"].iloc[0]
+#     an_image_shape = get_data_from_image_files([an_image_filename])[0][1].shape
 
-
+#     all_subtypes = {}
+#     for image_subtype in image_subtypes:
+#         print(f"{image_subtype = }")
+#         subtype_information = tabular_information[
+#             tabular_information["image_subtype"] == image_subtype
+#         ]
+#         dict_of_images = {
+#             a: b
+#             for a, b, c, d in get_data_from_image_files(
+#                 list(subtype_information["filename"].values)
+#             )
+#         }
+#         all_ksads_keys = {}
+#         for ksads_key in interesting_ksads:
+#             print(f"  {ksads_key = }")
+#             # Process only those images for which we have information for this ksads_key
+#             augmented_information = pd.merge(
+#                 subtype_information,
+#                 df_mh_y_ksads_ss[[*join_keys, ksads_key]],
+#                 on=join_keys,
+#                 how="inner",
+#                 validate="one_to_one",
+#             )
+#             print(f"  {len(augmented_information) = }")
+#             augmented_information.dropna(inplace=True)
+#             print(f"  {len(augmented_information) = }")
+#             print(f"  {augmented_information.columns = }")
+#             # Now that we know which images we'll need, let's stack them into a single 4-dimensional shape
+#             all_images = np.stack(
+#                 [dict_of_images[filename] for filename in augmented_information["filename"].values]
+#             )
+#             output_image = np.zeros(an_image_shape)
+#             for voxel_location, i in np.ndenumerate(output_image):
+#                 # voxel_location = (28, 53, 71)  # TODO: Remove me
+#                 # print(f"    {voxel_location = }")
+#                 df_y = pd.DataFrame(all_images[:, *voxel_location], columns=["image"])
+#                 if len(list(df_y["image"].unique())) <= 1:
+#                     response = 0.0  # Very bad voxel (despite being perfectly predictable)
+#                 else:
+#                     y = df_y["image"]
+#                     X = augmented_information[[*independent_keys, ksads_key]]
+#                     X = sm.add_constant(X)  # TODO: Does this affect augmented_information?
+#                     # print(f"{type(y) = }")
+#                     # print(f"{type(X) = }")
+#                     # print(f"{df_y['image'].mean() = }")
+#                     # print(f"{df_y['image'].std() = }")
+#                     fit = sm.OLS(y, X).fit()
+#                     # print(fit.summary())
+#                     response = 1 - fit.f_pvalue  # Higher is better
+#                 output_image[*voxel_location] = response
+#             all_ksads_keys[ksads_key] = output_image
+#         all_subtypes[image_subtype] = all_ksads_keys
+#     return all_subtypes
 # -
-def use_statsmodel():
-    image_subtypes = list(tabular_information["image_subtype"].unique())
-    an_image_filename = tabular_information["filename"].iloc[0]
-    an_image_shape = get_data_from_image_files([an_image_filename])[0][1].shape
-
-    all_subtypes = {}
-    for image_subtype in image_subtypes:
-        print(f"{image_subtype = }")
-        subtype_information = tabular_information[
-            tabular_information["image_subtype"] == image_subtype
-        ]
-        dict_of_images = {
-            a: b
-            for a, b, c, d in get_data_from_image_files(
-                list(subtype_information["filename"].values)
-            )
-        }
-        all_ksads_keys = {}
-        for ksads_key in interesting_ksads:
-            print(f"  {ksads_key = }")
-            # Process only those images for which we have information for this ksads_key
-            augmented_information = pd.merge(
-                subtype_information,
-                df_mh_y_ksads_ss[[*join_keys, ksads_key]],
-                on=join_keys,
-                how="inner",
-                validate="one_to_one",
-            )
-            print(f"  {len(augmented_information) = }")
-            augmented_information.dropna(inplace=True)
-            print(f"  {len(augmented_information) = }")
-            print(f"  {augmented_information.columns = }")
-            # Now that we know which images we'll need, let's stack them into a single 4-dimensional shape
-            all_images = np.stack(
-                [dict_of_images[filename] for filename in augmented_information["filename"].values]
-            )
-            output_image = np.zeros(an_image_shape)
-            for voxel_location, i in np.ndenumerate(output_image):
-                # voxel_location = (28, 53, 71)  # TODO: Remove me
-                # print(f"    {voxel_location = }")
-                df_y = pd.DataFrame(all_images[:, *voxel_location], columns=["image"])
-                if len(list(df_y["image"].unique())) <= 1:
-                    response = 0.0  # Very bad voxel (despite being perfectly predictable)
-                else:
-                    y = df_y["image"]
-                    X = augmented_information[[*independent_keys, ksads_key]]
-                    X = sm.add_constant(X)  # TODO: Does this affect augmented_information?
-                    # print(f"{type(y) = }")
-                    # print(f"{type(X) = }")
-                    # print(f"{df_y['image'].mean() = }")
-                    # print(f"{df_y['image'].std() = }")
-                    fit = sm.OLS(y, X).fit()
-                    # print(fit.summary())
-                    response = 1 - fit.f_pvalue  # Higher is better
-                output_image[*voxel_location] = response
-            all_ksads_keys[ksads_key] = output_image
-        all_subtypes[image_subtype] = all_ksads_keys
-    return all_subtypes
 def use_numpy(white_matter_mask):
     image_subtypes = list(tabular_information["image_subtype"].unique())
     an_image_filename = tabular_information["filename"].iloc[0]
