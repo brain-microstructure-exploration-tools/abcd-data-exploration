@@ -15,7 +15,7 @@
 
 # # An example workflow for generating hypotheses with ABCD data
 
-# ## Installing dependencies
+# ## Installing dependent Python packages
 # One way to do this is with a virtual python environment installed so that it is accessible to Jupyter lab.  This needs to be set up only once.
 # ```bash
 # python -m venv ~/abcd311
@@ -25,6 +25,8 @@
 # pip install -r requirements.txt
 # ```
 # Then, once Jupyter is open with this lab notebook, "Change Kernel..." to be "abcd311".
+
+# ## Import dependent Pyton packages
 
 # Import from Python packages
 from typing import Any, Union
@@ -40,68 +42,22 @@ import re
 import statsmodels.api as sm
 import time
 
-# Set global parameters to match your environment
+# ## Set global variables
+
+# +
+# Set global parameters to match your environment.  Ultimately these will be member variables of a class
 gor_image_directory: str = "/data2/ABCD/gor-images"
 white_matter_mask_file: str = os.path.join(gor_image_directory, "gortemplate0.nii.gz")
 coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory: str = os.path.join(tabular_data_directory, "core")
 
-# +
-# Useful inputs to our task
-
-# independent_vars is the locations of some useful csv data columns. These files live in `core_directory`
-
-independent_vars: list[list[Union[str, list[str]]]] = [
-    [
-        "abcd-general/abcd_y_lt.csv",
-        [
-            # TODO: Convert site_id_l to one-hot so that we can use it.  Currently it is str
-            # "site_id_l",  # Site ID at each event
-            # TODO: We are including participants with no siblings in study at the expense of losing family ID.  Do this better.
-            # "rel_family_id",  # Participants belonging to the same family share a family ID.  They will differ between data releases
-            "interview_age"  # Participant's age in month at start of the event
-        ],
-    ],
-    [
-        "gender-identity-sexual-health/gish_p_gi.csv",
-        [
-            "demo_gender_id_v2",  # 1=Male; 2=Female; 3=Trans male; 4=Trans female; 5=Gender queer; 6=Different; 777=Decline to answer; 999=Don't know
-            # "demo_gender_id_v2_l",  # same?
-        ],
-    ],
-    [
-        "abcd-general/abcd_p_demo.csv",
-        [
-            # TODO: These duplicate each other and gender-identity-sexual-health/gish_p_gi.csv.  Why?
-            # "demo_gender_id_v2",  # same?
-            # "demo_gender_id_v2_l",  # same?
-        ],
-    ],
-    [
-        "physical-health/ph_y_bld.csv",
-        [
-            # "biospec_blood_baso_percent",  # BASO %
-            # "biospec_blood_baso_abs",  # BASO ABS
-            # "biospec_blood_eos_percent",  # EOS %
-            # "biospec_blood_eos_abs",  # EOS ABS
-            # "biospec_blood_hemoglobin",  # Hemoglobin
-            # "biospec_blood_mcv",  # MCV
-            # "biospec_blood_plt_count",  # PLT Count
-            # "biospec_blood_wbc_count",  # WBC Count
-            # "biospec_blood_ferritin",  # Ferritin
-            # "biospec_blood_hemoglobin_a1",  # hemoglobin_a1
-            # "biospec_blood_imm_gran_per",  # Immature Gran %
-        ],
-    ],
-]
-
-# We'll do KSADS variables once we've computed `interesting_ksads` below
-
-# +
-# Useful global variables
-
+# Useful class static const member
+# Images are distinguished from each other by their subjects and timing.  (Also distinguished as "md" vs. "fa" type, though not relevant here.)
 join_keys: list[str] = ["src_subject_id", "eventname"]
+# -
+
+# ## Define functions for various steps of the workflow
 
 # +
 # Functions for handling image voxel data
@@ -212,7 +168,7 @@ def select_rows_of_dataframe(df: pd.core.frame.DataFrame, query_dict: dict[str, 
     return rows
 
 # +
-# Function to read and cache KSADS tabular information
+# Functions to read and cache KSADS tabular information
 
 
 def clean_ksads_data_frame(df: pd.core.frame.DataFrame) -> pd.core.frame.DataFrame:
@@ -295,9 +251,6 @@ def find_interesting_entropies(file_mh_y_ksads_ss):
     print("Entropy calculation done")
     return sorted_entropies
 
-# +
-# Find interesting KSADS data
-
 
 def find_interesting_ksads():
     file_mh_y_ksads_ss = "mental-health/mh_y_ksads_ss.csv"
@@ -369,10 +322,10 @@ def get_table_drop_nulls(tablename, list_of_keys):
     return df
 
 
-def merge_dataframes_for_keys(independent_vars):
+def merge_dataframes_for_keys(confounding_vars):
     df_generator = (
         get_table_drop_nulls(tablename, [*join_keys, *list_of_keys])
-        for tablename, list_of_keys in independent_vars
+        for tablename, list_of_keys in confounding_vars
         if list_of_keys
     )
     df_all_keys = next(df_generator)
@@ -383,9 +336,9 @@ def merge_dataframes_for_keys(independent_vars):
     return df_all_keys
 
 
-def merge_tabular_information(independent_vars, coregistered_images_directory):
-    df_all_keys = merge_dataframes_for_keys(independent_vars)
-    independent_keys = set(df_all_keys.columns).difference(set(join_keys))
+def merge_confounding_table(confounding_vars, coregistered_images_directory):
+    df_all_keys = merge_dataframes_for_keys(confounding_vars)
+    confounding_keys = set(df_all_keys.columns).difference(set(join_keys))
 
     list_of_image_files = get_list_of_image_files(coregistered_images_directory)
     df_image_information = parse_image_filenames(list_of_image_files)
@@ -396,94 +349,22 @@ def merge_tabular_information(independent_vars, coregistered_images_directory):
         how="inner",
         validate="one_to_many",
     )
-    return df_all_images, independent_keys
-# +
-# Load tabular information for keys other than KSADS keys
-start = time.time()
-tabular_information, independent_keys = merge_tabular_information(
-    independent_vars, coregistered_images_directory
-)
-print(f"{independent_keys = }")
-print(f"{len(tabular_information) = }")
-print(f"Total time to load tabular information = {time.time() - start}s")
+    return df_all_images, confounding_keys
 
-# Load KSADS information
-file_mh_y_ksads_ss, interesting_ksads = find_interesting_ksads()
-df_mh_y_ksads_ss = ksads_filename_to_dataframe(file_mh_y_ksads_ss)
 
-# Load voxel mask
-white_matter_mask = get_white_matter_mask(white_matter_mask_file)
-# +
-# def use_statsmodel():
-#     image_subtypes = list(tabular_information["image_subtype"].unique())
-#     an_image_filename = tabular_information["filename"].iloc[0]
-#     an_image_shape = get_data_from_image_files([an_image_filename])[0][1].shape
-
-#     all_subtypes = {}
-#     for image_subtype in image_subtypes:
-#         print(f"{image_subtype = }")
-#         subtype_information = tabular_information[
-#             tabular_information["image_subtype"] == image_subtype
-#         ]
-#         dict_of_images = {
-#             a: b
-#             for a, b, c, d in get_data_from_image_files(
-#                 list(subtype_information["filename"].values)
-#             )
-#         }
-#         all_ksads_keys = {}
-#         for ksads_key in interesting_ksads:
-#             print(f"  {ksads_key = }")
-#             # Process only those images for which we have information for this ksads_key
-#             augmented_information = pd.merge(
-#                 subtype_information,
-#                 df_mh_y_ksads_ss[[*join_keys, ksads_key]],
-#                 on=join_keys,
-#                 how="inner",
-#                 validate="one_to_one",
-#             )
-#             print(f"  {len(augmented_information) = }")
-#             augmented_information.dropna(inplace=True)
-#             print(f"  {len(augmented_information) = }")
-#             print(f"  {augmented_information.columns = }")
-#             # Now that we know which images we'll need, let's stack them into a single 4-dimensional shape
-#             all_images = np.stack(
-#                 [dict_of_images[filename] for filename in augmented_information["filename"].values]
-#             )
-#             output_image = np.zeros(an_image_shape)
-#             for voxel_location, i in np.ndenumerate(output_image):
-#                 # voxel_location = (28, 53, 71)  # TODO: Remove me
-#                 # print(f"    {voxel_location = }")
-#                 df_y = pd.DataFrame(all_images[:, *voxel_location], columns=["image"])
-#                 if len(list(df_y["image"].unique())) <= 1:
-#                     response = 0.0  # Very bad voxel (despite being perfectly predictable)
-#                 else:
-#                     y = df_y["image"]
-#                     X = augmented_information[[*independent_keys, ksads_key]]
-#                     X = sm.add_constant(X)  # TODO: Does this affect augmented_information?
-#                     # print(f"{type(y) = }")
-#                     # print(f"{type(X) = }")
-#                     # print(f"{df_y['image'].mean() = }")
-#                     # print(f"{df_y['image'].std() = }")
-#                     fit = sm.OLS(y, X).fit()
-#                     # print(fit.summary())
-#                     response = 1 - fit.f_pvalue  # Higher is better
-#                 output_image[*voxel_location] = response
-#             all_ksads_keys[ksads_key] = output_image
-#         all_subtypes[image_subtype] = all_ksads_keys
-#     return all_subtypes
 # -
-def use_numpy(white_matter_mask):
-    image_subtypes = list(tabular_information["image_subtype"].unique())
-    an_image_filename = tabular_information["filename"].iloc[0]
+# How we might process the inputs using numpy
+def use_numpy(
+    white_matter_mask, confounding_table, interesting_ksads, tested_vars, confounding_keys
+) -> dict[str, dict[str, np.ndarray]]:
+    image_subtypes = list(confounding_table["image_subtype"].unique())
+    an_image_filename = confounding_table["filename"].iloc[0]
     an_image_shape = get_data_from_image_files([an_image_filename])[0][1].shape
 
     all_subtypes = {}
     for image_subtype in image_subtypes:
         print(f"{image_subtype = }")
-        subtype_information = tabular_information[
-            tabular_information["image_subtype"] == image_subtype
-        ]
+        subtype_information = confounding_table[confounding_table["image_subtype"] == image_subtype]
         dict_of_images = {
             a: b
             for a, b, c, d in get_data_from_image_files(
@@ -496,7 +377,7 @@ def use_numpy(white_matter_mask):
             # Process only those images for which we have information for this ksads_key
             augmented_information = pd.merge(
                 subtype_information,
-                df_mh_y_ksads_ss[[*join_keys, ksads_key]],
+                tested_vars[[*join_keys, ksads_key]],
                 on=join_keys,
                 how="inner",
                 validate="one_to_one",
@@ -509,7 +390,7 @@ def use_numpy(white_matter_mask):
             print(f"  {len(augmented_information) = }")
             print(f"  {augmented_information.columns = }")
 
-            X = augmented_information[[*independent_keys, ksads_key]].to_numpy()
+            X = augmented_information[[*confounding_keys, ksads_key]].to_numpy()
             kernel = np.linalg.inv(X.transpose().dot(X))
 
             # Now that we know which images we'll need, let's stack them into a single 4-dimensional shape
@@ -534,10 +415,97 @@ def use_numpy(white_matter_mask):
     return all_subtypes
 
 
-start = time.time()
-subtype_ksadskey_image = use_numpy(white_matter_mask)
-print(f"Computed all voxels in time {time.time() - start}s")
+# ## Define or load input data
+# +
+# Set inputs for our task.  Ultimately these will either be class members or parameters for class methods.
 
+# confounding_vars is the locations of some useful csv data columns. These files live in `core_directory`
+
+confounding_vars_input: list[list[Union[str, list[str]]]] = [
+    [
+        "abcd-general/abcd_y_lt.csv",
+        [
+            # TODO: Convert site_id_l to one-hot so that we can use it.  Currently it is str
+            # "site_id_l",  # Site ID at each event
+            # TODO: We are including participants with no siblings in study at the expense of losing family ID.  Do this better.
+            # "rel_family_id",  # Participants belonging to the same family share a family ID.  They will differ between data releases
+            "interview_age"  # Participant's age in month at start of the event
+        ],
+    ],
+    [
+        "gender-identity-sexual-health/gish_p_gi.csv",
+        [
+            "demo_gender_id_v2",  # 1=Male; 2=Female; 3=Trans male; 4=Trans female; 5=Gender queer; 6=Different; 777=Decline to answer; 999=Don't know
+            # "demo_gender_id_v2_l",  # same?
+        ],
+    ],
+    [
+        "abcd-general/abcd_p_demo.csv",
+        [
+            # TODO: These duplicate each other and gender-identity-sexual-health/gish_p_gi.csv.  Why?
+            # "demo_gender_id_v2",  # same?
+            # "demo_gender_id_v2_l",  # same?
+        ],
+    ],
+    [
+        "physical-health/ph_y_bld.csv",
+        [
+            # "biospec_blood_baso_percent",  # BASO %
+            # "biospec_blood_baso_abs",  # BASO ABS
+            # "biospec_blood_eos_percent",  # EOS %
+            # "biospec_blood_eos_abs",  # EOS ABS
+            # "biospec_blood_hemoglobin",  # Hemoglobin
+            # "biospec_blood_mcv",  # MCV
+            # "biospec_blood_plt_count",  # PLT Count
+            # "biospec_blood_wbc_count",  # WBC Count
+            # "biospec_blood_ferritin",  # Ferritin
+            # "biospec_blood_hemoglobin_a1",  # hemoglobin_a1
+            # "biospec_blood_imm_gran_per",  # Immature Gran %
+        ],
+    ],
+]
+# +
+# Load tabular information for counfounding variables
+# Merge the information with image meta data so that we know which images we have confounding variable values for.
+start = time.time()
+confounding_table_input, confounding_keys_input = merge_confounding_table(
+    confounding_vars_input, coregistered_images_directory
+)
+print(f"{confounding_keys_input = }")
+print(f"{len(confounding_table_input) = }")
+print(f"Total time to load confounding information = {time.time() - start}s")
+
+# Load KSADS information
+file_mh_y_ksads_ss_input, interesting_ksads_input = find_interesting_ksads()
+tested_vars_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
+
+# Load voxel mask
+white_matter_mask_input = get_white_matter_mask(white_matter_mask_file)
+# -
+# ## Run the workflow
+
+
+# +
+if True:
+    print("Invoking use_numpy")
+    func = use_numpy
+else:
+    print("Invoking use_nilearn")
+    func = use_nilearn
+
+start = time.time()
+subtype_ksadskey_image: dict[str, dict[str, np.ndarray]] = func(
+    white_matter_mask_input,
+    confounding_table_input,
+    interesting_ksads_input,
+    tested_vars_input,
+    confounding_keys_input,
+)
+print(f"Computed all voxels in time {time.time() - start}s")
+# -
+
+
+# ## Show some output
 
 print(f"{type(subtype_ksadskey_image) = }")
 print(f"{subtype_ksadskey_image.keys() = }")
@@ -546,14 +514,20 @@ print(f"{subtype_ksadskey_image['fa'].keys() = }")
 print(f"{type(subtype_ksadskey_image['fa']['ksads_1_187_t']) = }")
 means = np.array(
     [
-        [float(np.mean(value1.reshape(-1)[white_matter_mask])) for key1, value1 in value0.items()]
+        [
+            float(np.mean(value1.reshape(-1)[white_matter_mask_input]))
+            for key1, value1 in value0.items()
+        ]
         for key0, value0 in subtype_ksadskey_image.items()
     ]
 )
 print(f"{means = }")
 stds = np.array(
     [
-        [float(np.std(value1.reshape(-1)[white_matter_mask])) for key1, value1 in value0.items()]
+        [
+            float(np.std(value1.reshape(-1)[white_matter_mask_input]))
+            for key1, value1 in value0.items()
+        ]
         for key0, value0 in subtype_ksadskey_image.items()
     ]
 )
