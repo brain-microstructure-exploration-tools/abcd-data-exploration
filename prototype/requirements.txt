@@ -1,4 +1,5 @@
 dipy
+nilearn
 numpy
 pandas
 statsmodels
