@@ -1,4 +1,5 @@
 dipy
+nibabel
 nilearn
 numpy
 pandas
