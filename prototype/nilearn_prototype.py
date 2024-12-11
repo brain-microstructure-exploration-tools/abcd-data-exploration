@@ -459,7 +459,6 @@ def merge_confounding_table(
 
 
 # -
-# TODO: describe this function
 # How we might process the inputs using numpy
 def use_numpy(
     white_matter_mask: np.ndarray,
@@ -556,8 +555,7 @@ def use_numpy(
     return all_subtypes
 
 
-# TODO: describe this function
-# How we might process the inputs using numpy
+# How we might process the inputs using nilearn.mass_univariate.permuted_ols()
 def use_nilearn(
     white_matter_mask: nibabel.nifti1.Nifti1Image,
     confounding_table: pd.core.frame.DataFrame,
