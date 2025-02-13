@@ -16,7 +16,8 @@
 # # An example workflow for generating hypotheses with ABCD data
 
 # ## Installing dependent Python packages
-# One way to do this is with a virtual python environment installed so that it is accessible to Jupyter lab.  This needs to be set up only once.
+# One way to do this is with a virtual python environment installed so that it is accessible to Jupyter lab.
+# This needs to be set up only once.  I am using Python 3.11.8, but this likely works with other versions of Python.
 # ```bash
 # python -m venv ~/abcd311
 # source ~/abcd311/bin/activate
@@ -37,6 +38,7 @@ import math
 import matplotlib.pyplot as plt
 import nibabel as nib
 import nibabel.nifti1
+import nilearn
 import nilearn.maskers
 import nilearn.masking
 import nilearn.mass_univariate
@@ -248,7 +250,7 @@ def ksads_filename_to_dataframe(
 def data_frame_value_counts(df: pd.core.frame.DataFrame) -> dict[str, dict[str, np.int64]]:
     """
     Whether an KSADS column of data is interesting depends upon, in part, how much it varies across images.
-    Here we performa census that counts how many times each value occurs in a column.
+    Here we perform a census that counts how many times each value occurs in a column.
     """
     # Returns a dict:
     #     Each key is a column name
@@ -389,39 +391,93 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
 # Find all images for which we have tabular data
 
 
-def get_table_drop_nulls(tablename: str, list_of_keys: list[str]) -> pd.core.frame.DataFrame:
-    """
-    Reads data table from filename
-    Keeps only specified keys (columns)
-    Replace each empty string with a NaN value
-    Converts all columns (except those in join_keys) to float
-    Deletes rows that include NaN values.
-    """
-    df: pd.core.frame.DataFrame = csv_file_to_dataframe(os.path.join(core_directory, tablename))[
-        list_of_keys
+def process_confounding_var(
+    fieldname: str, details: dict[str, Any], join_keys: list[str]
+) -> pd.core.frame.DataFrame:
+    print(f"Starting process_confounding_var({fieldname!r})")
+    mesgs = []
+    if "File" not in details:
+        mesgs.append(f"The 'File' attribute must be supplied for the fieldname {fieldname!r}")
+    if "HandleMissing" not in details:
+        mesgs.append(
+            f"The 'HandleMissing' attribute must be supplied for the fieldname {fieldname!r}"
+        )
+    if "Type" not in details:
+        mesgs.append(f"The 'Type' attribute must be supplied for the fieldname {fieldname!r}")
+    if mesgs:
+        raise ValueError("\n".join(mesgs))
+    Fieldname = fieldname
+    File = details["File"]
+    HandleMissing = details["HandleMissing"]
+    Type = details["Type"]
+    InternalName = details["InternalName"] if "InternalName" in details else Fieldname
+    Convert = details["Convert"] if "Convert" in details else {}
+    IsMissing = details["IsMissing"] if "IsMissing" in details else ["", float("nan")]
+    Longitudinal = details["Longitudinal"] if "Longitudinal" in details else ["intercept"]
+
+    # Read the desired data column and join keys from file
+    df: pd.core.frame.DataFrame = csv_file_to_dataframe(os.path.join(core_directory, File))[
+        join_keys + [InternalName]
     ]
-    df.replace("", pd.NA, inplace=True)
-    for col in list_of_keys:
-        if col not in join_keys:
-            df[col] = df[col].astype(float)
-    df.dropna(inplace=True)
+    # Rename the InternalName column to Fieldname
+    if InternalName != Fieldname:
+        df.rename(columns={InternalName: Fieldname}, inplace=True)
+    # Perform conversions of values
+    for src, dst in Convert.items():
+        df[Fieldname] = df[Fieldname].replace(src, dst)
+    # Make all missing values equal to IsMissing[0]
+    for val in IsMissing[1:]:
+        df[Fieldname] = df[Fieldname].replace(val, IsMissing[0])
+    # Remove rows for missing values if requested
+    if HandleMissing == "invalidate":
+        df = df[df[Fieldname] != IsMissing[0]]
+    # Use unused distinct values instead of "missing" if requested
+    if HandleMissing == "separately":
+        unused_numeric_value = 1 + max(
+            [int(x) for x in df[Fieldname] if isinstance(x, (int, float))] + [0]
+        )
+        number_needed_values = (df[Fieldname] == IsMissing[0]).sum()
+        df.loc[df[Fieldname] == IsMissing[0], Fieldname] = range(
+            unused_numeric_value, unused_numeric_value + number_needed_values
+        )
+    # Convert categorical data to a (usually) multicolumn one-hot representation
+    if Type == "unordered":
+        print("  Starting pd.get_dummies")
+        df = pd.get_dummies(df, dummy_na=True, columns=[Fieldname], drop_first=True)
+        print("  Finished pd.get_dummies")
+    # TODO: Handle the Longitudinal configuration
+    # Remove columns that are constant
+    df = df.loc[:, (df.nunique() > 1) | df.columns.isin(join_keys)]
     return df
 
 
-def merge_dataframes_for_keys(
-    confounding_vars: list[tuple[str, list[str]]]
-) -> pd.core.frame.DataFrame:
-    """
-    This routine merges data tables for the confounding variables into a single table.
+# confounding_vars_config is a dictionary organized by Fieldname.
+# In the output, fieldnames will be extened in cases where multicolumn representations are required,
+#     such as for one-hot columns for unordered data.
+# The value associated with a fieldname key is itself a dictionary.  It includes zero or more of:
+#     "File": Required.  Location within core_directory to read data from
+#     "InternalName": name used within "File" for this field name.  Defaults to the field name itself.
+#     "Convert": a Python dictionary that shows how to translate keys (e.g., change from NaN, "777") to values (e.g., changed to "").
+#     "IsMissing": a list of values that, after conversion, should be considered missing.  Defaults to [NaN, ""].
+#     "HandleMissing": Required.
+#         "invalidate" (throw away scan if it has this field missing), or
+#         "together" (all scans marked as "missing" are put in one category that is dedicated to missing data.), or
+#         "separately" (each missing value is its own category; e.g., a patient with no siblings in the study)
+#     "Type":  Required.
+#         "ordered" (can be interpretted as a meaninful number) or
+#         "unordered" (each distinct value gets a one-hot column)
+#     "Longitudinal": list that contains zero or more of the following.  Default is ["intercept"].
+#         "time": field is a date, or possibly a sequence number, or
+#         "intercept": field is used as a normal number (ordered) or a normal one-hot (unordered)
+#         "slope": also add column(s) like "intercept" but with values multiplied by "time".
 
-    For each data table and its list of keys:
-        get it as a dataframe
-    Merge these dataframes into a single table using the join_keys
-    """
+
+def make_dataframe_for_confounding_vars(
+    confounding_vars_config: dict[str, dict[str, Any]],
+) -> pd.core.frame.DataFrame:
     df_generator: pd.core.frame.DataFrame = (
-        get_table_drop_nulls(tablename, [*join_keys, *list_of_keys])
-        for tablename, list_of_keys in confounding_vars
-        if list_of_keys
+        process_confounding_var(fieldname, details, join_keys)
+        for fieldname, details in confounding_vars_config.items()
     )
     df_all_keys: pd.core.frame.DataFrame = next(df_generator)
     for df_next in df_generator:
@@ -432,7 +488,7 @@ def merge_dataframes_for_keys(
 
 
 def merge_confounding_table(
-    confounding_vars: list[tuple[str, list[str]]], coregistered_images_directory: str
+    confounding_vars_config: dict[str, dict[str, Any]], coregistered_images_directory: str
 ) -> tuple[pd.core.frame.DataFrame, list[str]]:
     """
     This creates the master data table from disparate sources that includes confounding variables and image meta data.
@@ -443,7 +499,9 @@ def merge_confounding_table(
     Merge these two dataframes using the join_keys
     Note that a (src_subject_id, eventname) pair can occur more than once, e.g., for both "md" and "fa" image subtypes
     """
-    df_all_keys: pd.core.frame.DataFrame = merge_dataframes_for_keys(confounding_vars)
+    df_all_keys: pd.core.frame.DataFrame = make_dataframe_for_confounding_vars(
+        confounding_vars_config
+    )
     confounding_keys: list[str] = list(set(df_all_keys.columns).difference(set(join_keys)))
 
     list_of_image_files: list[str] = get_list_of_image_files(coregistered_images_directory)
@@ -563,6 +621,7 @@ def use_nilearn(
     tested_vars: pd.core.frame.DataFrame,
     confounding_keys: list[str],
 ) -> dict[str, dict[str, np.ndarray]]:
+    print(f"Using nilearn version {nilearn.__version__}")
     # print(f"{white_matter_mask = }")
     # # confounding_table has columns *counfounding_vars, src_subject_id, eventname, image_subtype, filename
     # print(f"{confounding_table = }")
@@ -604,6 +663,8 @@ def use_nilearn(
         print(f"  {confounding_input.shape = }")
 
         white_matter_indices: np.ndarray = (white_matter_mask_input.get_fdata() != 0.0).reshape(-1)
+        # TODO: Should we remove from `target_input` the voxels that never vary?  (Maybe not: nilearn seems happy to
+        # ignore them, and removing them could affect connectedness of the white matter, affecting TFCE?)
         target_input: np.ndarray = np.stack(
             [
                 np_voxels.reshape(-1)[white_matter_indices]
@@ -616,7 +677,7 @@ def use_nilearn(
 
         # Set all other input parameters for nilearn.mass_univariate.permuted_ols()
         model_intercept: bool = True
-        n_perm: int = 1000  # TODO: Use 10000
+        n_perm: int = 5000  # TODO: Use 10000
         two_sided_test: bool = True  # TODO: Is this right?  Does it matter?
         random_state = None
         n_jobs: int = -1  # All available
@@ -626,12 +687,13 @@ def use_nilearn(
         masker.fit()
         # Some web pages say that we must invoke masker.transform in order to have masker.inverse_transform available within nilearn.
         # Maybe we are okay without doing that:
-        # _ = masker.transform(white_matter_mask)
-        tfce: bool = False  # TODO: Make it work when this is set to True
-        threshold = None  # TODO: What should this be when tfce==True?
+        _ = masker.transform(white_matter_mask)
+        # TODO: Should tfce be True here, or instead at a second-level analysis (using non_parametric_inference).
+        tfce: bool = False
+        threshold = None  # TODO: What should this be?
         output_type: str = "dict"
 
-        # Ask nilearn to compute our p-values and apply tfce (if True).
+        # Ask nilearn to compute our p-values, and apply tfce if tfce==True.
         response: dict[str, np.ndarray] = nilearn.mass_univariate.permuted_ols(
             tested_vars=tested_input,
             target_vars=target_input,
@@ -657,58 +719,81 @@ def use_nilearn(
 # +
 # Set inputs for our task.  Ultimately these will either be class members or parameters for class methods.
 
-# confounding_vars is the locations of some useful csv data columns. These files live in `core_directory`
-confounding_vars_input: list[tuple[str, list[str]]] = [
-    (
-        "abcd-general/abcd_y_lt.csv",
-        [
-            # TODO: Add a processing step somewhere to convert each relevant field to a set of one-hot variables
-            # "site_id_l",  # Site ID at each event
-            # TODO: rel_family_id is not set if an individual has no siblings in the data set.
-            #       We are going to give these individuals unique rel_family_id values; and then we're going to need to one-hot them.
-            # "rel_family_id",  # Participants belonging to the same family share a family ID.  They will differ between data releases
-            "interview_age"  # Participant's age in month at start of the event
-        ],
-    ),
-    (
-        "gender-identity-sexual-health/gish_p_gi.csv",
-        [
-            # TODO: demo_gender_id_v2 should be one-hot, with handling for 777 and 999 as category="unknown"?
-            "demo_gender_id_v2",  # 1=Male; 2=Female; 3=Trans male; 4=Trans female; 5=Gender queer; 6=Different; 777=Decline to answer; 999=Don't know
-            # "demo_gender_id_v2_l",  # same?, so don't include it
-        ],
-    ),
-    (
-        "abcd-general/abcd_p_demo.csv",
-        [
-            # TODO: These duplicate each other and gender-identity-sexual-health/gish_p_gi.csv.  Why?
-            # "demo_gender_id_v2",  # same?, so don't include it
-            # "demo_gender_id_v2_l",  # same?, so don't include it
-        ],
-    ),
-    (
-        "physical-health/ph_y_bld.csv",
-        [
-            # TODO: Can any of these be useful, or are they sparse/empty of useful information?
-            # "biospec_blood_baso_percent",  # BASO %
-            # "biospec_blood_baso_abs",  # BASO ABS
-            # "biospec_blood_eos_percent",  # EOS %
-            # "biospec_blood_eos_abs",  # EOS ABS
-            # "biospec_blood_hemoglobin",  # Hemoglobin
-            # "biospec_blood_mcv",  # MCV
-            # "biospec_blood_plt_count",  # PLT Count
-            # "biospec_blood_wbc_count",  # WBC Count
-            # "biospec_blood_ferritin",  # Ferritin
-            # "biospec_blood_hemoglobin_a1",  # hemoglobin_a1
-            # "biospec_blood_imm_gran_per",  # Immature Gran %
-        ],
-    ),
-]
+confounding_vars_config: dict[str, dict[str, Any]] = {
+    "interview_age": {
+        "File": "abcd-general/abcd_y_lt.csv",
+        "HandleMissing": "invalidate",
+        "Type": "ordered",
+    },
+    "site_id_l": {
+        "File": "abcd-general/abcd_y_lt.csv",
+        "HandleMissing": "separately",
+        "Type": "unordered",
+    },
+    "demo_gender_id_v2": {
+        "File": "gender-identity-sexual-health/gish_p_gi.csv",
+        "Convert": {"777": "", "999": ""},
+        "HandleMissing": "together",
+        "Type": "unordered",
+    },
+    # "rel_family_id": {
+    #     "File": "abcd-general/abcd_y_lt.csv",
+    #     "HandleMissing": "together",  # TODO: Should it be "separately"?
+    #     "Type": "unordered",
+    # },
+}
+
+# confounding_vars_input: list[tuple[str, list[str]]] = [
+#     (
+#         "abcd-general/abcd_y_lt.csv",
+#         [
+#             # TODO: Add a processing step somewhere to convert each relevant field to a set of one-hot variables
+#             # "site_id_l",  # Site ID at each event
+#             # TODO: rel_family_id is not set if an individual has no siblings in the data set.
+#             #       We are going to give these individuals unique rel_family_id values; and then we're going to need to one-hot them.
+#             # "rel_family_id",  # Participants belonging to the same family share a family ID.  They will differ between data releases
+#             "interview_age"  # Participant's age in month at start of the event
+#         ],
+#     ),
+#     (
+#         "gender-identity-sexual-health/gish_p_gi.csv",
+#         [
+#             # TODO: demo_gender_id_v2 should be one-hot, with handling for 777 and 999 as category="unknown"?
+#             "demo_gender_id_v2",  # 1=Male; 2=Female; 3=Trans male; 4=Trans female; 5=Gender queer; 6=Different; 777=Decline to answer; 999=Don't know
+#             # "demo_gender_id_v2_l",  # same?, so don't include it
+#         ],
+#     ),
+#     (
+#         "abcd-general/abcd_p_demo.csv",
+#         [
+#             # TODO: These duplicate each other and gender-identity-sexual-health/gish_p_gi.csv.  Why?
+#             # "demo_gender_id_v2",  # same?, so don't include it
+#             # "demo_gender_id_v2_l",  # same?, so don't include it
+#         ],
+#     ),
+#     (
+#         "physical-health/ph_y_bld.csv",
+#         [
+#             # TODO: Can any of these be useful, or are they sparse/empty of useful information?
+#             # "biospec_blood_baso_percent",  # BASO %
+#             # "biospec_blood_baso_abs",  # BASO ABS
+#             # "biospec_blood_eos_percent",  # EOS %
+#             # "biospec_blood_eos_abs",  # EOS ABS
+#             # "biospec_blood_hemoglobin",  # Hemoglobin
+#             # "biospec_blood_mcv",  # MCV
+#             # "biospec_blood_plt_count",  # PLT Count
+#             # "biospec_blood_wbc_count",  # WBC Count
+#             # "biospec_blood_ferritin",  # Ferritin
+#             # "biospec_blood_hemoglobin_a1",  # hemoglobin_a1
+#             # "biospec_blood_imm_gran_per",  # Immature Gran %
+#         ],
+#     ),
+# ]
 # +
 # Load tabular information for counfounding variables
 start = time.time()
 confounding_table_input, confounding_keys_input = merge_confounding_table(
-    confounding_vars_input, coregistered_images_directory
+    confounding_vars_config, coregistered_images_directory
 )
 print(f"{confounding_keys_input = }")
 print(f"{len(confounding_table_input) = }")
@@ -823,16 +908,19 @@ def find_good_slice(margins):
 
 
 if func == use_nilearn:
-    # We used use_numpy().  Show some values that might help us to sanity check these outputs.
+    # We used use_nilearn().  Show some values that might help us to sanity check these outputs.
     # nilearn returned only voxels in the white matter, so we construct images that include background
     output_images_by_subtype = {}
     white_matter_indices = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
     print("## use_nilearn output")
+    gamma = 0.01
+    if gamma != 1.0:
+        print(f"Using contrast adjustment with {gamma = }")
     for sub_type in output_voxels_by_subtype.keys():
         print(f"## {sub_type = }")
         for table in output_voxels_by_subtype[sub_type].keys():
             # The three types of table are ['t', 'logp_max_t', 'h0_max_t'].  We're probably most interested in 'logp_max_t'.
-            print(f"## table: {table = }")
+            print(f"#### table: {table = }")
             # Show the shape of this output
             print(
                 f"output_voxels_by_subtype[{sub_type!r}][{table!r}].shape = "
@@ -853,6 +941,7 @@ if func == use_nilearn:
             #     f"output_voxels_by_subtype[{sub_type!r}][{table!r}] = "
             #     + f"{output_voxels_by_subtype[sub_type][table]}"
             # )
+        print("#### image information")
         number_tested_vars = output_voxels_by_subtype[sub_type]["logp_max_t"].shape[0]
         # We will make an output image for each tested variable (i.e., each KSADS variable)
         # Background is zeros
@@ -906,25 +995,27 @@ if func == use_nilearn:
         print()
         # Set gamma to, e.g., 0.1 or 0.01 to change the contrast of the image.
         # Lower values of gamma brighten the darkest voxels the most
-        gamma = 1.0
         for i in range(number_tested_vars):
             # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
-            print(f"A YZ slice of {sub_type!r} image for {interesting_ksads_input[i]!r}")
-            slice_2d = output_images_for_subtype[i, bestX[i], minY[i] : maxY[i], minZ[i] : maxZ[i]]
+            print(f"{sub_type!r} image X={bestX[i]} slice for {interesting_ksads_input[i]!r}")
+            # slice_2d = output_images_for_subtype[i, bestX[i], minY[i] : maxY[i], minZ[i] : maxZ[i]]
+            slice_2d = output_images_for_subtype[i, bestX[i], :, :]
             slice_2d = np.pow(slice_2d, gamma)  # Gamma correction
             plt.imshow(slice_2d, cmap="gray")
             # plt.colorbar()
             plt.show()
 
-            print(f"A XZ slice of {sub_type!r} image for {interesting_ksads_input[i]!r}")
-            slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], bestY[i], minZ[i] : maxZ[i]]
+            print(f"{sub_type!r} image Y={bestY[i]} slice for {interesting_ksads_input[i]!r}")
+            # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], bestY[i], minZ[i] : maxZ[i]]
+            slice_2d = output_images_for_subtype[i, :, bestY[i], :]
             slice_2d = np.pow(slice_2d, gamma)  # Gamma correction
             plt.imshow(slice_2d, cmap="gray")
             # plt.colorbar()
             plt.show()
 
-            print(f"A XY slice of {sub_type!r} image for {interesting_ksads_input[i]!r}")
-            slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], minY[i] : maxY[i], bestZ[i]]
+            print(f"{sub_type!r} image Z={bestZ[i]} slice for {interesting_ksads_input[i]!r}")
+            # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], minY[i] : maxY[i], bestZ[i]]
+            slice_2d = output_images_for_subtype[i, :, :, bestZ[i]]
             slice_2d = np.pow(slice_2d, gamma)  # Gamma correction
             plt.imshow(slice_2d, cmap="gray")
             # plt.colorbar()
