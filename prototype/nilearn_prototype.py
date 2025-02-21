@@ -63,6 +63,9 @@ core_directory: str = os.path.join(tabular_data_directory, "core")
 # Images are distinguished from each other by their subjects and timing.  (Also distinguished as "md" vs. "fa" type,
 # though not relevant here.)
 join_keys: list[str] = ["src_subject_id", "eventname"]
+LongitudinalDefault: list[str] = ["intercept"]
+IsMissingDefault: list[Any] = ["", np.nan]
+ConvertDefault: dict[Any, Any] = {}
 # -
 
 # ## Define functions for various steps of the workflow
@@ -94,7 +97,7 @@ def parse_image_filenames(list_of_image_files: list[str]) -> pd.core.frame.DataF
     """
     filename_pattern: str = (
         r"gorinput([0-9]+)-modality([0-9]+)-sub-([A-Za-z0-9]+)_ses-([A-Za-z0-9]+)_run-"
-        + r"([A-Za-z0-9]+)_([A-Za-z0-9]+)_([A-Za-z0-9]+)-([A-Za-z0-9]+).nii.gz"
+        r"([A-Za-z0-9]+)_([A-Za-z0-9]+)_([A-Za-z0-9]+)-([A-Za-z0-9]+).nii.gz"
     )
     filename_keys: list[str] = [
         "filename",
@@ -385,9 +388,11 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
 # The value associated with a fieldname key is itself a dictionary.  These keys are required:
 #     "File": Required.  Location within core_directory to read data from
 #     "HandleMissing": Required.
-#         "invalidate" (throw away scan if it has this field missing), or
-#         "together" (all scans marked as "missing" are put in one category that is dedicated to missing data.), or
-#         "separately" (each missing value is its own category; e.g., a patient with no siblings in the study)
+#         "invalidate" (throw away scan if it has this field missing)
+#         "together" (all scans marked as "missing" are put in one category that is dedicated to all missing data)
+#         "byValue" (for each IsMissing value, all scans with that value are put in a category)
+#         "separately" (each row with a missing value is its own category; e.g., a patient with no siblings in the
+#             study)
 #     "Type":  Required.
 #         "ordered" (can be interpretted as a meaninful number) or
 #         "unordered" (each distinct but one value gets a one-hot column)
@@ -404,20 +409,15 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
 
 
 def process_confounding_var(fieldname: str, details: dict[str, Any], join_keys: list[str]) -> pd.core.frame.DataFrame:
-    # TODO: Move default values to static class variables from this and other functions
-    LongitudinalDefault: list[str] = ["intercept"]
-    IsMissingDefault: list[Any] = ["", float("nan")]
-    ConvertDefault: dict[Any, Any] = {}
-
     print(f"Starting process_confounding_var({fieldname!r})")
 
     mesgs: list[str] = []
     if "File" not in details:
-        mesgs.append(f"The 'File' attribute must be supplied for the fieldname {fieldname!r}")
+        mesgs.append(f"The 'File' attribute must be supplied for the fieldname {fieldname!r}.")
     if "HandleMissing" not in details:
-        mesgs.append(f"The 'HandleMissing' attribute must be supplied for the fieldname {fieldname!r}")
+        mesgs.append(f"The 'HandleMissing' attribute must be supplied for the fieldname {fieldname!r}.")
     if "Type" not in details:
-        mesgs.append(f"The 'Type' attribute must be supplied for the fieldname {fieldname!r}")
+        mesgs.append(f"The 'Type' attribute must be supplied for the fieldname {fieldname!r}.")
     if mesgs:
         raise ValueError("\n".join(mesgs))
 
@@ -435,13 +435,13 @@ def process_confounding_var(fieldname: str, details: dict[str, Any], join_keys: 
         key in {"File", "HandleMissing", "Type", "InternalName", "Convert", "IsMissing", "Longitudinal"}
         for key in details.keys()
     ):
-        mesgs.append(f"At least one of {list(details.keys)!r} is not a valid name for {fieldname!r}")
-    if HandleMissing not in {"invalidate", "together", "separately"}:
-        mesgs.append(f"`{details['HandleMissing']!r}` is not a valid HandleMissing value for {fieldname!r}")
+        mesgs.append(f"At least one of {list(details.keys())!r} is not a valid name for {fieldname!r}.")
+    if HandleMissing not in {"invalidate", "together", "byValue", "separately"}:
+        mesgs.append(f"`{details['HandleMissing']!r}` is not a valid HandleMissing value for {fieldname!r}.")
     if Type not in {"ordered", "unordered"}:
-        mesgs.append(f"`{details['Type']!r}` is not a valid Type value for {fieldname!r}")
+        mesgs.append(f"`{details['Type']!r}` is not a valid Type value for {fieldname!r}.")
     if len(Longitudinal) == 0 or not all(element in {"time", "intercept", "slope"} for element in Longitudinal):
-        mesgs.append(f"`{details['Longitudinal']!r}` is not a valid Longitudinal value for {fieldname!r}")
+        mesgs.append(f"`{details['Longitudinal']!r}` is not a valid Longitudinal value for {fieldname!r}.")
     if mesgs:
         raise ValueError("\n".join(mesgs))
 
@@ -449,27 +449,64 @@ def process_confounding_var(fieldname: str, details: dict[str, Any], join_keys: 
     df_var: pd.core.frame.DataFrame = csv_file_to_dataframe(os.path.join(core_directory, File))[
         join_keys + [InternalName]
     ]
+
     # Rename the InternalName column to Fieldname
     if InternalName != Fieldname:
         df_var.rename(columns={InternalName: Fieldname}, inplace=True)
+
     # Perform conversions of values
     for src, dst in Convert.items():
         df_var[Fieldname] = df_var[Fieldname].replace(src, dst)
-    # Make all missing values equal to IsMissing[0]
-    for val in IsMissing[1:]:
-        df_var[Fieldname] = df_var[Fieldname].replace(val, IsMissing[0])
-    # TODO: How should we handle an "ordered" variable that has missing values?
-    # Remove rows for missing values if requested
-    if HandleMissing == "invalidate":
+
+    # Do the right thing with missing values
+    if HandleMissing != "byValue" and len(IsMissing) > 1:
+        # Make all missing values equal to IsMissing[0]
+        for val in IsMissing[1:]:
+            df_var[Fieldname] = df_var[Fieldname].replace(val, IsMissing[0])
+        IsMissing = IsMissing[:1]
+    if HandleMissing == "invalidate" and len(IsMissing):
+        # Remove rows for missing values
         df_var = df_var[df_var[Fieldname] != IsMissing[0]]
-    # Use unused distinct values instead of "missing" if requested
+    if HandleMissing == "together":
+        if Type == "unordered":
+            # There is nothing more to do.
+            pass
+        if Type == "ordered":
+            # We will interpret missing as 0, but add a one-hot column so that it can effectively be any constant.  In
+            # particular, it will not be confounded with actual values of 0.
+            new_missing_name = Fieldname + "_missing"
+            if new_missing_name in df_var.columns:
+                mesg: str = f"Failed to get unique column name for {new_missing_name!r}."
+                raise ValueError(mesg)
+            df_var[new_missing_name] = (df_var[Fieldname] == IsMissing[0]).astype(int)
+            df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = 0
+    if HandleMissing == "byValue":
+        if Type == "unordered":
+            # There is nothing more to do.
+            pass
+        if Type == "ordered":
+            # TODO: Do we need to implement this case?
+            raise ValueError(
+                'We do not currently handle the case that HandleMissing == "byValue" and Type == "ordered"'
+            )
     if HandleMissing == "separately":
+        # Use unused distinct values instead of "missing".
+        # We add unique values so the pd.get_dummies call creates a one-hot column for each missing value.
         unused_numeric_value = 1 + max([int(x) for x in df_var[Fieldname] if isinstance(x, (int, float))] + [0])
         number_needed_values = (df_var[Fieldname] == IsMissing[0]).sum()
-        df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = range(
-            unused_numeric_value, unused_numeric_value + number_needed_values
-        )
-    # Convert categorical data to a (usually) multicolumn one-hot representation
+        if Type == "unordered":
+            df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = range(
+                unused_numeric_value, unused_numeric_value + number_needed_values
+            )
+        if Type == "ordered":
+            # TODO: Do we need to implement this case?
+            raise ValueError(
+                'We do not currently handle the case that HandleMissing == "separately" and Type == "ordered"'
+            )
+            # TODO: Create a distinct one-hot column for each row with value IsMissing[0].
+            df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = 0
+
+    # Convert categorical data to a multicolumn one-hot representation
     if Type == "unordered":
         df_var = pd.get_dummies(df_var, dummy_na=True, columns=[Fieldname], drop_first=False)
     # Remove columns that are constant
@@ -482,9 +519,6 @@ def process_longitudinal_config(
     df_dict: dict[str, pd.core.frame.DataFrame],
     join_keys: list[str],
 ) -> list[pd.core.frame.DataFrame]:
-    # TODO: Move default values to static class variables from this and other functions
-    LongitudinalDefault: list[str] = ["intercept"]
-
     # TODO: Do we need to worry about "time" and "slope" with target_vars and tested_vars too?
 
     # The value associated with each "Longitudinal" key is a list of zero or more of "time", "intercept", and "slope";
@@ -510,24 +544,25 @@ def process_longitudinal_config(
         for longitudinal in [details["Longitudinal"] if "Longitudinal" in details else LongitudinalDefault]
         if "slope" in longitudinal
     ]
+
+    mesgs: list[str] = []
     if len(has_time) > 1:
-        mesg = (
+        mesgs.append(
             f'{len(has_time)} confounding_var fields {has_time} were specified as "time" but more than 1 is not '
-            + "permitted"
+            "permitted."
         )
-        raise ValueError(mesg)
     if len(has_time) == 1 and len(has_slope) == 0:
-        mesg = (
+        mesgs.append(
             f'When one confounding_var fieldname {has_time} is specified as "time" then at least one must be '
-            + 'specified as "slope"'
+            'specified as "slope".'
         )
-        raise ValueError(mesg)
     if len(has_time) == 0 and len(has_slope) > 0:
-        mesg = (
+        mesgs.append(
             f'{len(has_slope)} confounding_var fields were supplied as "slope" {has_slope} but none are permitted '
-            + 'because no confounding fields are supplied as "time"'
+            'because no confounding fields are supplied as "time".'
         )
-        raise ValueError(mesg)
+    if mesgs:
+        raise ValueError("\n".join(mesgs))
 
     # We return one dataframe for each fieldname in has_intercept.
     df_intercepts: list[pd.core.frame.DataFrame] = [df_dict[key] for key in has_intercept]
@@ -554,7 +589,7 @@ def process_longitudinal_config(
             for column in columns_to_process:
                 new_slope_name: str = column + "_slope"
                 if new_slope_name in df_merged.columns:
-                    mesg = f"Failed to get unique column name for {new_slope_name!r}"
+                    mesg = f"Failed to get unique column name for {new_slope_name!r}."
                     raise ValueError(mesg)
                 df_merged[new_slope_name] = df_merged[column] * df_merged[new_time_name]
             df_merged.drop(columns=columns_to_process + [new_time_name], axis=1, inplace=True)
@@ -747,8 +782,6 @@ def use_nilearn(
         print(f"  {confounding_input.shape = }")
 
         white_matter_indices: np.ndarray = (white_matter_mask_input.get_fdata() != 0.0).reshape(-1)
-        # TODO: Should we remove from `target_input` the voxels that never vary?  (Maybe not: nilearn seems happy to
-        # ignore them, and removing them could affect connectedness of the white matter, affecting TFCE?)
         target_input: np.ndarray = np.stack(
             [
                 np_voxels.reshape(-1)[white_matter_indices]
@@ -819,7 +852,7 @@ confounding_vars_config: dict[str, dict[str, Any]] = {
     },
     # "rel_family_id": {
     #     "File": "abcd-general/abcd_y_lt.csv",
-    #     "HandleMissing": "together",  # TODO: Should it be "separately"?
+    #     "HandleMissing": "together",  # TODO: It should be "separately", yes?
     #     "Type": "unordered",
     # },
 }
@@ -865,7 +898,6 @@ tested_vars_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
 mask_threshold: float = 0.70
 
 # Let's commit to use numpy or nilearn.
-# TODO: Currently the two approaches use a different type(white_matter_mask_input).  That's ugly; let's fix that.
 if False:
     print("Invoking use_numpy")
     white_matter_mask_input = get_white_matter_mask_as_numpy(white_matter_mask_file, mask_threshold)
@@ -888,8 +920,6 @@ else:
     func = use_nilearn
 
 start = time.time()
-# TODO: If we want to support both use_numpy and use_nilearn,
-#       they'll probably be distinct subclasses of some base class that supports the rest of this functionality
 output_voxels_by_subtype: dict[str, dict[str, np.ndarray]] = func(
     white_matter_mask_input, confounding_table_input, interesting_ksads_input, tested_vars_input, confounding_keys_input
 )
@@ -975,22 +1005,22 @@ if func == use_nilearn:
             # Show the shape of this output
             print(
                 f"output_voxels_by_subtype[{sub_type!r}][{table!r}].shape = "
-                + f"{output_voxels_by_subtype[sub_type][table].shape}"
+                f"{output_voxels_by_subtype[sub_type][table].shape}"
             )
             # Show the sum of all values of this output
             print(
                 f"np.sum(output_voxels_by_subtype[{sub_type!r}][{table!r}]) = "
-                + f"{np.sum(output_voxels_by_subtype[sub_type][table])}"
+                f"{np.sum(output_voxels_by_subtype[sub_type][table])}"
             )
             # Count how many of the values are not NaNs.
             print(
                 f"np.sum(~np.isnan(output_voxels_by_subtype[{sub_type!r}][{table!r}])) = "
-                + f"{np.sum(~np.isnan(output_voxels_by_subtype[sub_type][table]))}"
+                f"{np.sum(~np.isnan(output_voxels_by_subtype[sub_type][table]))}"
             )
             # Ask to see the whole table; though Python cuts out much of it
             # print(
             #     f"output_voxels_by_subtype[{sub_type!r}][{table!r}] = "
-            #     + f"{output_voxels_by_subtype[sub_type][table]}"
+            #     f"{output_voxels_by_subtype[sub_type][table]}"
             # )
         print("#### image information")
         number_tested_vars = output_voxels_by_subtype[sub_type]["logp_max_t"].shape[0]
@@ -1004,11 +1034,11 @@ if func == use_nilearn:
         # Stash the image into a dictionary that we are building
         output_images_by_subtype[sub_type] = output_images_for_subtype
         # Show the shape of the image
-        print(f"output_images_for_subtype[{sub_type!r}].shape = " + f"{output_images_for_subtype.shape}")
+        print(f"output_images_for_subtype[{sub_type!r}].shape = {output_images_for_subtype.shape}")
         # Show the minimum voxel intensity
-        print(f"np.amin(output_images_for_subtype[{sub_type!r}]) = " + f"{np.amin(output_images_for_subtype)}")
+        print(f"np.amin(output_images_for_subtype[{sub_type!r}]) = {np.amin(output_images_for_subtype)}")
         # Show the maximum voxel intensity
-        print(f"np.amax(output_images_for_subtype[{sub_type!r}]) = " + f"{np.amax(output_images_for_subtype)}")
+        print(f"np.amax(output_images_for_subtype[{sub_type!r}]) = {np.amax(output_images_for_subtype)}")
 
         # Find interestig slices to plot.
         # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
@@ -1040,7 +1070,7 @@ if func == use_nilearn:
             print(f"{sub_type!r} image X={bestX[i]} slice for {interesting_ksads_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, bestX[i], minY[i] : maxY[i], minZ[i] : maxZ[i]]
             slice_2d = output_images_for_subtype[i, bestX[i], :, :]
-            slice_2d = np.pow(slice_2d, gamma)  # Gamma correction
+            slice_2d = np.power(slice_2d, gamma)  # Gamma correction
             matplotlib.pyplot.imshow(slice_2d, cmap="gray")
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
@@ -1048,7 +1078,7 @@ if func == use_nilearn:
             print(f"{sub_type!r} image Y={bestY[i]} slice for {interesting_ksads_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], bestY[i], minZ[i] : maxZ[i]]
             slice_2d = output_images_for_subtype[i, :, bestY[i], :]
-            slice_2d = np.pow(slice_2d, gamma)  # Gamma correction
+            slice_2d = np.power(slice_2d, gamma)  # Gamma correction
             matplotlib.pyplot.imshow(slice_2d, cmap="gray")
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
@@ -1056,7 +1086,7 @@ if func == use_nilearn:
             print(f"{sub_type!r} image Z={bestZ[i]} slice for {interesting_ksads_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], minY[i] : maxY[i], bestZ[i]]
             slice_2d = output_images_for_subtype[i, :, :, bestZ[i]]
-            slice_2d = np.pow(slice_2d, gamma)  # Gamma correction
+            slice_2d = np.power(slice_2d, gamma)  # Gamma correction
             matplotlib.pyplot.imshow(slice_2d, cmap="gray")
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
