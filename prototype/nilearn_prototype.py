@@ -278,14 +278,16 @@ def ksads_keys_only(all_columns: dict[str, Any]) -> dict[str, Any]:
     """
     This finds those keys that are KSADS variables rather than being index keys (subject, event), etc.
     """
-    return {key: value for key, value in all_columns.items() if bool(re.match("ksads_\d", key))}
+    response: dict[str, Any] = {key: value for key, value in all_columns.items() if bool(re.match("ksads_\d", key))}
+    return response
 
 
 def entropy_of_all_columns(all_columns) -> dict[str, float]:
     """
     Compute entropy (information) of every column by calling subroutine for each column
     """
-    return {key: entropy_of_column_counts(value) for key, value in all_columns.items()}
+    response: dict[str, float] = {key: entropy_of_column_counts(value) for key, value in all_columns.items()}
+    return response
 
 
 def find_interesting_entropies(file_mh_y_ksads_ss: str):
@@ -408,7 +410,19 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
 #             "time" and "slope" will produce quadradic time values in a dataframe column.
 
 
-def process_confounding_var(fieldname: str, details: dict[str, Any], join_keys: list[str]) -> pd.core.frame.DataFrame:
+def large_enough_category_size(
+    df_var: pd.core.frame.DataFrame, join_keys: list[str], min_category_size: int
+) -> list[bool]:
+    response: list[bool] = [
+        df_var[column].nunique() != 2 or df_var[column].value_counts().min() >= min_category_size
+        for column in df_var.columns
+    ]
+    return response
+
+
+def process_confounding_var(
+    fieldname: str, details: dict[str, Any], join_keys: list[str], min_category_size: int
+) -> pd.core.frame.DataFrame:
     print(f"Starting process_confounding_var({fieldname!r})")
 
     mesgs: list[str] = []
@@ -511,6 +525,11 @@ def process_confounding_var(fieldname: str, details: dict[str, Any], join_keys: 
         df_var = pd.get_dummies(df_var, dummy_na=True, columns=[Fieldname], drop_first=False)
     # Remove columns that are constant
     df_var = df_var.loc[:, (df_var.nunique() > 1) | df_var.columns.isin(join_keys)]
+    # Remove categories with too few members
+    df_var = df_var.loc[
+        :, large_enough_category_size(df_var, join_keys, min_category_size) | df_var.columns.isin(join_keys)
+    ]
+
     return df_var
 
 
@@ -600,8 +619,9 @@ def process_longitudinal_config(
 
 
 def make_dataframe_for_confounding_vars(confounding_vars_config: dict[str, dict[str, Any]]) -> pd.core.frame.DataFrame:
+    min_category_size = 5
     df_dict: dict[str, pd.core.frame.DataFrame] = {
-        fieldname: process_confounding_var(fieldname, details, join_keys)
+        fieldname: process_confounding_var(fieldname, details, join_keys, min_category_size)
         for fieldname, details in confounding_vars_config.items()
     }
     df_list: list[pd.core.frame.DataFrame] = process_longitudinal_config(confounding_vars_config, df_dict, join_keys)
