@@ -27,7 +27,7 @@
 # ```
 # Then, once Jupyter is open with this lab notebook, "Change Kernel..." to be "abcd311".
 
-# ## Import dependent Pyton packages
+# ## Import dependent Python packages
 
 # Import from Python packages
 import functools
@@ -52,17 +52,19 @@ import pandas as pd
 # ## Set global variables
 
 # +
-# Set global parameters to match your environment.  Ultimately these will be member variables of a class
+# Set global parameters to match your environment.  Ultimately these will be member variables of a class.
 gor_image_directory: str = "/data2/ABCD/gor-images"
 white_matter_mask_file: str = os.path.join(gor_image_directory, "gortemplate0.nii.gz")
 coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory: str = os.path.join(tabular_data_directory, "core")
 
-# Useful class static const member.
+# Useful class static const members
+
 # Images are distinguished from each other by their subjects and timing.  (Also distinguished as "md" vs. "fa" type,
 # though not relevant here.)
 join_keys: list[str] = ["src_subject_id", "eventname"]
+# Defaults for confounding_vars_config
 LongitudinalDefault: list[str] = ["intercept"]
 IsMissingDefault: list[Any] = ["", np.nan]
 ConvertDefault: dict[Any, Any] = {}
@@ -154,7 +156,7 @@ def get_white_matter_mask_as_numpy(white_matter_mask_file: str, mask_threshold: 
     # The return value is a np.ndarray of bool, a voxel mask that indicates which voxels are to be kept for subsequent
     # analyses.  The mask is flattened to a single dimension because our analysis software indexes voxels this way We
     # determine white matter by looking at the white_matter_mask_file for voxels that have an intensity above a
-    # threshold
+    # threshold.
     white_matter_mask_input: np.ndarray = get_data_from_image_files([white_matter_mask_file])[0][1]
     white_matter_mask: np.ndarray = (white_matter_mask_input >= mask_threshold).reshape(-1)
     print(f"Number of white matter voxels = {np.sum(white_matter_mask)}")
@@ -251,7 +253,7 @@ def data_frame_value_counts(df: pd.core.frame.DataFrame) -> dict[str, dict[str, 
     Here we perform a census that counts how many times each value occurs in a column.
     """
     # Returns a dict:
-    #     Each key is a column name
+    #     Each key is a column name.
     #     Each value is a dict:
     #         Each key of this is a value that occurs in the column.
     #         The corresponding value is the number of occurrences.
@@ -388,7 +390,7 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
 # In the output, fieldnames will be extened in cases where multicolumn representations are required,
 #     such as for one-hot columns for unordered data.
 # The value associated with a fieldname key is itself a dictionary.  These keys are required:
-#     "File": Required.  Location within core_directory to read data from
+#     "File": Required.  Location within core_directory to read data from.
 #     "HandleMissing": Required.
 #         "invalidate" (throw away scan if it has this field missing)
 #         "together" (all scans marked as "missing" are put in one category that is dedicated to all missing data)
@@ -405,7 +407,7 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
 #     "IsMissing": a list of values that, after conversion, should be considered missing.  Defaults to ["", NaN].
 #     "Longitudinal": list that contains one or more of the following.  Default is ["intercept"].
 #         "time": field is a date, or possibly a sequence number.  At most one fieldname can be "time".
-#         "intercept": field is used as a normal number (ordered) or a normal one-hot (unordered)
+#         "intercept": field is used as a normal number (ordered) or a normal one-hot (unordered).
 #         "slope": also add column(s) like "intercept" but with values multiplied by "time".  A fieldname with both
 #             "time" and "slope" will produce quadradic time values in a dataframe column.
 
@@ -504,8 +506,8 @@ def process_confounding_var(
                 'We do not currently handle the case that HandleMissing == "byValue" and Type == "ordered"'
             )
     if HandleMissing == "separately":
-        # Use unused distinct values instead of "missing".
-        # We add unique values so the pd.get_dummies call creates a one-hot column for each missing value.
+        # We want to use unused distinct values for each type of "missing".  We add unique values so the pd.get_dummies
+        # call creates a one-hot column for each missing value.
         unused_numeric_value = 1 + max([int(x) for x in df_var[Fieldname] if isinstance(x, (int, float))] + [0])
         number_needed_values = (df_var[Fieldname] == IsMissing[0]).sum()
         if Type == "unordered":
@@ -710,8 +712,9 @@ def use_numpy(
             print(f"    {augmented_information.columns = }")
             print(f"    {len(augmented_information) = }")
 
-            # For each voxel, we are going to run a linear regression to solve y = np.dot(X, beta) for beta.
-            # We will end up doing all linear regressions in one computation.
+            # For each voxel, we are going to run a linear regression to solve y = np.dot(X, beta) for beta.  We will
+            # end up doing all linear regressions in one computation.
+
             # X is one row per image BY one column for each variable (which are the confounding variables and the one
             #     ksads variable)
             X: np.ndarray = augmented_information[[*confounding_keys, ksads_key]].to_numpy()
@@ -739,8 +742,8 @@ def use_numpy(
             # We are going to put the negative of these sum_of_squares values into an (unmasked, original size) image.
             # We'll put zeros everywhere that was masked away.
             # TODO: Do we need to make sure that this background (zeros) is instead worse than foreground?
-            # TODO: Instead of negative sum_of_squares, let's use p-values associated with the sum_of_squares,
-            #       based upon a chi-squared distribution of the right number of dimensions
+            # TODO: Instead of negative sum_of_squares, let's use p-values associated with the sum_of_squares, based
+            #       upon a chi-squared distribution of the right number of dimensions
             output_image: np.ndarray = np.zeros(white_matter_mask.shape)
             output_image[white_matter_mask] = -sum_of_squares
             output_image = output_image.reshape(all_images.shape[1:])
@@ -824,7 +827,7 @@ def use_nilearn(
         # within nilearn.  Maybe we are okay without doing that:
         _ = masker.transform(white_matter_mask)
         # TODO: Should tfce be True here, or instead at a second-level analysis (using non_parametric_inference).
-        tfce: bool = False
+        tfce: bool = True
         threshold = None  # For TFCE, threshold is set to None
         output_type: str = "dict"
 
@@ -862,11 +865,11 @@ confounding_vars_config: dict[str, dict[str, Any]] = {
         "Type": "ordered",
         "Longitudinal": ["time", "intercept"],
     },
-    "site_id_l": {"File": "abcd-general/abcd_y_lt.csv", "HandleMissing": "separately", "Type": "unordered"},
+    "site_id_l": {"File": "abcd-general/abcd_y_lt.csv", "HandleMissing": "invalidate", "Type": "unordered"},
     "demo_gender_id_v2": {
         "File": "gender-identity-sexual-health/gish_p_gi.csv",
         "Convert": {"777": "", "999": ""},
-        "HandleMissing": "together",
+        "HandleMissing": "invalidate",
         "Type": "unordered",
         "Longitudinal": ["slope", "intercept"],
     },
@@ -969,7 +972,7 @@ if func == use_numpy:
     )
     print(f"{means = }")
     # These are the standard deviations of the sum_of_squares voxel values for white matter voxels, organized by subtype
-    # and ksads variable
+    # and ksads variable.
     stds = np.array(
         [
             [float(np.std(value1.reshape(-1)[white_matter_mask_input])) for key1, value1 in value0.items()]
@@ -1009,7 +1012,7 @@ def find_good_slice(margins):
 
 if func == use_nilearn:
     # We used use_nilearn().  Show some values that might help us to sanity check these outputs.  nilearn returned only
-    # voxels in the white matter, so we construct images that include background
+    # voxels in the white matter, so we construct images that include background.
     output_images_by_subtype = {}
     white_matter_indices = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
     print("## use_nilearn output")
@@ -1083,8 +1086,8 @@ if func == use_nilearn:
         # print(f"{maxZ = }")
 
         print()
-        # Set gamma to, e.g., 0.1 or 0.01 to change the contrast of the image.
-        # Lower values of gamma brighten the darkest voxels the most
+        # Set gamma to, e.g., 0.1 or 0.01 to change the contrast of the image.  Lower values of gamma brighten the
+        # darkest voxels the most.
         for i in range(number_tested_vars):
             # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
             print(f"{sub_type!r} image X={bestX[i]} slice for {interesting_ksads_input[i]!r}")
