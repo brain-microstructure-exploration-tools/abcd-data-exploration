@@ -30,6 +30,8 @@
 # ## Import dependent Python packages
 
 # Import from Python packages
+from __future__ import annotations
+
 import functools
 import math
 import os
@@ -63,11 +65,14 @@ core_directory: str = os.path.join(tabular_data_directory, "core")
 
 # Images are distinguished from each other by their subjects and timing.  (Also distinguished as "md" vs. "fa" type,
 # though not relevant here.)
-join_keys: list[str] = ["src_subject_id", "eventname"]
+join_keys_global: list[str] = ["src_subject_id", "eventname"]
 # Defaults for confounding_vars_config
 LongitudinalDefault: list[str] = ["intercept"]
 IsMissingDefault: list[Any] = ["", np.nan]
 ConvertDefault: dict[Any, Any] = {}
+# TODO: Make sure that nilearn.masking.compute_brain_mask() is using `threshold` the way we think it does
+mask_threshold_global: float = 0.70
+min_category_size_global: int = 5
 # -
 
 # ## Define functions for various steps of the workflow
@@ -148,7 +153,7 @@ def get_data_from_image_files(list_of_files: list[str]) -> list[Any]:
         <class 'nibabel.nifti1.Nifti1Image'>: an object that can be modified and can be written to
                file as a .nii.gz file
     """
-    response = [(file,) + dipy.io.image.load_nifti(file, return_img=True) for file in list_of_files]
+    response: list[Any] = [(file, *dipy.io.image.load_nifti(file, return_img=True)) for file in list_of_files]
     return response
 
 
@@ -225,7 +230,7 @@ def ksads_filename_to_dataframe(file_mh_y_ksads_ss: str, use_cache: bool = True)
     rebuild_cache: bool = not use_cache
     try:
         # Check whether we've cached this computation
-        ksads_filename_to_dataframe.df_mh_y_ksads_ss
+        df_mh_y_ksads_ss: pd.core.frame.DataFrame = ksads_filename_to_dataframe.df_mh_y_ksads_ss
     except AttributeError:
         # We haven't cached it, so we'll have to read the data even if the user would have permitted us to use the cache
         rebuild_cache = True
@@ -233,11 +238,11 @@ def ksads_filename_to_dataframe(file_mh_y_ksads_ss: str, use_cache: bool = True)
         print("Begin reading KSADS data file")
         start: float = time.time()
         # Reading from disk takes 10-30 seconds; it is a big file
-        response: pd.core.frame.DataFrame = csv_file_to_dataframe(file_mh_y_ksads_ss)
+        df_mh_y_ksads_ss = csv_file_to_dataframe(file_mh_y_ksads_ss)
         # Deal with 555 and 888 values in the data table
-        response = clean_ksads_data_frame(response)
+        df_mh_y_ksads_ss = clean_ksads_data_frame(df_mh_y_ksads_ss)
         # Place the computed table in the cache
-        ksads_filename_to_dataframe.df_mh_y_ksads_ss = response
+        ksads_filename_to_dataframe.df_mh_y_ksads_ss = df_mh_y_ksads_ss
         print(f"Read KSADS data file in {time.time() - start}s")
     # Return what is now in the cache
     return ksads_filename_to_dataframe.df_mh_y_ksads_ss
@@ -387,8 +392,8 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
 
 
 # confounding_vars_config is a dictionary organized by Fieldname.
-# In the output, fieldnames will be extened in cases where multicolumn representations are required,
-#     such as for one-hot columns for unordered data.
+# In the output, fieldnames will be extened in cases where multicolumn representations are required, such as for one-hot
+#     columns for unordered data.
 # The value associated with a fieldname key is itself a dictionary.  These keys are required:
 #     "File": Required.  Location within core_directory to read data from.
 #     "HandleMissing": Required.
@@ -412,9 +417,7 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
 #             "time" and "slope" will produce quadradic time values in a dataframe column.
 
 
-def large_enough_category_size(
-    df_var: pd.core.frame.DataFrame, join_keys: list[str], min_category_size: int
-) -> list[bool]:
+def large_enough_category_size(df_var: pd.core.frame.DataFrame, min_category_size: int) -> list[bool]:
     response: list[bool] = [
         df_var[column].nunique() != 2 or df_var[column].value_counts().min() >= min_category_size
         for column in df_var.columns
@@ -435,16 +438,17 @@ def process_confounding_var(
     if "Type" not in details:
         mesgs.append(f"The 'Type' attribute must be supplied for the fieldname {fieldname!r}.")
     if mesgs:
-        raise ValueError("\n".join(mesgs))
+        mesg = "\n".join(mesgs)
+        raise ValueError(mesg)
 
     Fieldname: str = fieldname
     File: str = details["File"]
     HandleMissing: str = details["HandleMissing"]
     Type: str = details["Type"]
-    InternalName: str = details["InternalName"] if "InternalName" in details else Fieldname
-    Convert: dict[Any, Any] = details["Convert"] if "Convert" in details else ConvertDefault
-    IsMissing: list[Any] = details["IsMissing"] if "IsMissing" in details else IsMissingDefault
-    Longitudinal: list[str] = details["Longitudinal"] if "Longitudinal" in details else LongitudinalDefault
+    InternalName: str = details.get("InternalName", Fieldname)
+    Convert: dict[Any, Any] = details.get("Convert", ConvertDefault)
+    IsMissing: dict[Any, Any] = details.get("IsMissing", IsMissingDefault)
+    Longitudinal: dict[Any, Any] = details.get("Longitudinal", LongitudinalDefault)
 
     mesgs = []
     if not all(
@@ -459,16 +463,17 @@ def process_confounding_var(
     if len(Longitudinal) == 0 or not all(element in {"time", "intercept", "slope"} for element in Longitudinal):
         mesgs.append(f"`{details['Longitudinal']!r}` is not a valid Longitudinal value for {fieldname!r}.")
     if mesgs:
-        raise ValueError("\n".join(mesgs))
+        mesg = "\n".join(mesgs)
+        raise ValueError(mesg)
 
     # Read the desired data column and join keys from file
     df_var: pd.core.frame.DataFrame = csv_file_to_dataframe(os.path.join(core_directory, File))[
-        join_keys + [InternalName]
+        [*join_keys, InternalName]
     ]
 
     # Rename the InternalName column to Fieldname
     if InternalName != Fieldname:
-        df_var.rename(columns={InternalName: Fieldname}, inplace=True)
+        df_var = df_var.rename(columns={InternalName: Fieldname})
 
     # Perform conversions of values
     for src, dst in Convert.items():
@@ -492,7 +497,7 @@ def process_confounding_var(
             # particular, it will not be confounded with actual values of 0.
             new_missing_name = Fieldname + "_missing"
             if new_missing_name in df_var.columns:
-                mesg: str = f"Failed to get unique column name for {new_missing_name!r}."
+                mesg = f"Failed to get unique column name for {new_missing_name!r}."
                 raise ValueError(mesg)
             df_var[new_missing_name] = (df_var[Fieldname] == IsMissing[0]).astype(int)
             df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = 0
@@ -502,9 +507,8 @@ def process_confounding_var(
             pass
         if Type == "ordered":
             # TODO: Do we need to implement this case?
-            raise ValueError(
-                'We do not currently handle the case that HandleMissing == "byValue" and Type == "ordered"'
-            )
+            mesg = 'We do not currently handle the case that HandleMissing == "byValue" and Type == "ordered"'
+            raise ValueError(mesg)
     if HandleMissing == "separately":
         # We want to use unused distinct values for each type of "missing".  We add unique values so the pd.get_dummies
         # call creates a one-hot column for each missing value.
@@ -516,11 +520,8 @@ def process_confounding_var(
             )
         if Type == "ordered":
             # TODO: Do we need to implement this case?
-            raise ValueError(
-                'We do not currently handle the case that HandleMissing == "separately" and Type == "ordered"'
-            )
-            # TODO: Create a distinct one-hot column for each row with value IsMissing[0].
-            df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = 0
+            mesg = 'We do not currently handle the case that HandleMissing == "separately" and Type == "ordered"'
+            raise ValueError(mesg)
 
     # Convert categorical data to a multicolumn one-hot representation
     if Type == "unordered":
@@ -528,9 +529,7 @@ def process_confounding_var(
     # Remove columns that are constant
     df_var = df_var.loc[:, (df_var.nunique() > 1) | df_var.columns.isin(join_keys)]
     # Remove categories with too few members
-    df_var = df_var.loc[
-        :, large_enough_category_size(df_var, join_keys, min_category_size) | df_var.columns.isin(join_keys)
-    ]
+    df_var = df_var.loc[:, large_enough_category_size(df_var, min_category_size) | df_var.columns.isin(join_keys)]
 
     return df_var
 
@@ -550,19 +549,19 @@ def process_longitudinal_config(
     has_time = [
         fieldname
         for fieldname, details in confounding_vars_config.items()
-        for longitudinal in [details["Longitudinal"] if "Longitudinal" in details else LongitudinalDefault]
+        for longitudinal in [details.get("Longitudinal", LongitudinalDefault)]
         if "time" in longitudinal
     ]
     has_intercept = [
         fieldname
         for fieldname, details in confounding_vars_config.items()
-        for longitudinal in [details["Longitudinal"] if "Longitudinal" in details else LongitudinalDefault]
+        for longitudinal in [details.get("Longitudinal", LongitudinalDefault)]
         if "intercept" in longitudinal
     ]
     has_slope = [
         fieldname
         for fieldname, details in confounding_vars_config.items()
-        for longitudinal in [details["Longitudinal"] if "Longitudinal" in details else LongitudinalDefault]
+        for longitudinal in [details.get("Longitudinal", LongitudinalDefault)]
         if "slope" in longitudinal
     ]
 
@@ -583,7 +582,8 @@ def process_longitudinal_config(
             'because no confounding fields are supplied as "time".'
         )
     if mesgs:
-        raise ValueError("\n".join(mesgs))
+        mesg = "\n".join(mesgs)
+        raise ValueError(mesg)
 
     # We return one dataframe for each fieldname in has_intercept.
     df_intercepts: list[pd.core.frame.DataFrame] = [df_dict[key] for key in has_intercept]
@@ -595,16 +595,17 @@ def process_longitudinal_config(
         df_time: pd.core.frame.DataFrame = df_dict[has_time[0]].copy(deep=True)
         new_time_name: str = "ubhzaeZTE3McmbxX"
         if new_time_name in df_time.columns:
-            raise ValueError("Failed to get unique column name for df_time")
-        df_time.rename(columns={has_time[0]: new_time_name}, inplace=True)
+            mesg = "Failed to get unique column name for df_time"
+            raise ValueError(mesg)
+        df_time = df_time.rename(columns={has_time[0]: new_time_name})
         for fieldname in has_slope:
             df_slope: pd.core.frame.DataFrame = df_dict[fieldname].copy(deep=True)
             if new_time_name in df_slope.columns:
-                raise ValueError("Failed to get unique column name for df_slope")
+                mesg = "Failed to get unique column name for df_slope"
+                raise ValueError(mesg)
 
-            df_merged: pd.core.frame.DataFrame = pd.merge(
-                df_time, df_slope, on=join_keys, how="inner", validate="one_to_one"
-            )
+            df_merged: pd.core.frame.DataFrame
+            df_merged = pd.merge(df_time, df_slope, on=join_keys, how="inner", validate="one_to_one")
 
             columns_to_process: list[str] = list(set(df_slope.columns).difference(set(join_keys)))
             for column in columns_to_process:
@@ -613,15 +614,16 @@ def process_longitudinal_config(
                     mesg = f"Failed to get unique column name for {new_slope_name!r}."
                     raise ValueError(mesg)
                 df_merged[new_slope_name] = df_merged[column] * df_merged[new_time_name]
-            df_merged.drop(columns=columns_to_process + [new_time_name], axis=1, inplace=True)
+            df_merged = df_merged.drop(columns=[*columns_to_process, new_time_name], axis=1)
 
             df_slopes.append(df_merged)
 
     return df_intercepts + df_slopes
 
 
-def make_dataframe_for_confounding_vars(confounding_vars_config: dict[str, dict[str, Any]]) -> pd.core.frame.DataFrame:
-    min_category_size = 5
+def make_dataframe_for_confounding_vars(
+    confounding_vars_config: dict[str, dict[str, Any]], join_keys: list[str], min_category_size: int
+) -> pd.core.frame.DataFrame:
     df_dict: dict[str, pd.core.frame.DataFrame] = {
         fieldname: process_confounding_var(fieldname, details, join_keys, min_category_size)
         for fieldname, details in confounding_vars_config.items()
@@ -629,12 +631,15 @@ def make_dataframe_for_confounding_vars(confounding_vars_config: dict[str, dict[
     df_list: list[pd.core.frame.DataFrame] = process_longitudinal_config(confounding_vars_config, df_dict, join_keys)
     df_all_keys: pd.core.frame.DataFrame = df_list[0]
     for df_next in df_list[1:]:
-        df_all_keys = pd.merge(df_all_keys, df_next, on=join_keys, how="inner", validate="one_to_one")
+        df_all_keys.merge(df_next, on=join_keys, how="inner", validate="one_to_one")
     return df_all_keys
 
 
 def merge_confounding_table(
-    confounding_vars_config: dict[str, dict[str, Any]], coregistered_images_directory: str
+    confounding_vars_config: dict[str, dict[str, Any]],
+    coregistered_images_directory: str,
+    join_keys: list[str],
+    min_category_size: int,
 ) -> tuple[pd.core.frame.DataFrame, list[str]]:
     """
     This creates the master data table from disparate sources that includes confounding variables and image meta data.
@@ -645,8 +650,9 @@ def merge_confounding_table(
     Merge these two dataframes using the join_keys
     Note that a (src_subject_id, eventname) pair can occur more than once, e.g., for both "md" and "fa" image subtypes
     """
-    df_all_keys: pd.core.frame.DataFrame = make_dataframe_for_confounding_vars(confounding_vars_config)
-    confounding_keys: list[str] = list(set(df_all_keys.columns).difference(set(join_keys)))
+    df_all_keys: pd.core.frame.DataFrame
+    df_all_keys = make_dataframe_for_confounding_vars(confounding_vars_config, join_keys, min_category_size)
+    confounding_keys: list[str] = sorted(set(df_all_keys.columns).difference(set(join_keys)))
 
     list_of_image_files: list[str] = get_list_of_image_files(coregistered_images_directory)
     df_image_information: pd.core.frame.DataFrame = parse_image_filenames(list_of_image_files)
@@ -661,6 +667,29 @@ def merge_confounding_table(
 
 
 # -
+def find_good_slice(margins):
+    """
+    For each ksads variable, we want to show an interesting slice of the 3d-data.
+    For example, we choose a slice in the X dimension (i.e., we choose a YZ plane) by designating its x coordinate and
+        its lower and upper bounds for y and z.
+    First step is summing out over the Y and Z dimensions to compute `margins`, which is done before calling
+        find_good_slice().
+    (`margins` is 2-dimensional; it is computed from 4-dimensional data with shape=(number_tested_variables, size_x,
+        size_y, size_z))
+    We then compute:
+        for i in range(list_of_tested_variables):
+            min_[i] = The lowest x for which margins[i, x] is non-zero
+            max_[i] = One more than the largest x for which margins[i, x] is non-zero
+            best_[i] = The (first) value of x that maximizes margins[i, :]
+    This routine works identically for slices in the Y or Z dimensions, so long as margins is supplied by summing out
+    the remaining dimensions.
+    """
+    min_ = np.argmax(margins > 0.0, axis=-1)
+    best_ = np.argmax(margins, axis=-1)
+    max_ = np.argmax(np.cumsum(margins > 0.0, axis=-1), axis=-1) + 1
+    return min_, best_, max_
+
+
 # How we might process the inputs using numpy
 def use_numpy(
     white_matter_mask: np.ndarray,
@@ -668,6 +697,8 @@ def use_numpy(
     interesting_ksads: list[str],
     tested_vars: pd.core.frame.DataFrame,
     confounding_keys: list[str],
+    join_keys: list[str],
+    min_category_size: int,
 ) -> dict[str, dict[str, np.ndarray]]:
     # print(f"{white_matter_mask = }")
     # # confounding_table has columns *counfounding_vars, src_subject_id, eventname, image_subtype, filename
@@ -683,15 +714,18 @@ def use_numpy(
     # For each subtype (e.g., "fa" and "md")
     for image_subtype in image_subtypes:
         print(f"  {image_subtype = }")
-        # Get the confounding variables that we have for images of this sub_type
+        # Get the confounding variables that we have for images of this subtype
         subtype_information: pd.core.frame.DataFrame = confounding_table[
             confounding_table["image_subtype"] == image_subtype
         ]
-        # Get the voxel data for the images of this sub_type
+        # Get the voxel data for the images of this subtype
         dict_of_images: dict[str, np.ndarray] = {
             filename: voxels
-            for filename, voxels, c, d in get_data_from_image_files(list(subtype_information["filename"].values))
+            for filename, voxels, c, d in get_data_from_image_files(list(subtype_information["filename"].to_numpy()))
         }
+
+        # TODO: Here would be a good place to use the equivalent of large_enough_category_size(min_category_size)
+
         # Process the ksads_keys one by one
         all_ksads_keys: dict[str, np.ndarray] = {}
         for ksads_key in interesting_ksads:
@@ -705,7 +739,7 @@ def use_numpy(
                 validate="one_to_one",
             )
             # Retain only those images for which we have values for all variables
-            augmented_information.dropna(inplace=True)
+            augmented_information = augmented_information.dropna()
             # Add a consant term as a confounding variable
             augmented_information["constant"] = 1.0
 
@@ -724,7 +758,7 @@ def use_numpy(
             # Now that we know which images we'll need, let's stack them into a single 4-dimensional shape
             # (number_of_images, size_x, size_y, size_z).
             all_images: np.ndarray = np.stack(
-                [dict_of_images[filename] for filename in augmented_information["filename"].values]
+                [dict_of_images[filename] for filename in augmented_information["filename"].to_numpy()]
             )
             # y is one row per image BY one column for each voxel in the white_matter_mask
             y: np.ndarray = all_images.reshape(all_images.shape[0], -1)[:, white_matter_mask]
@@ -762,6 +796,8 @@ def use_nilearn(
     interesting_ksads: list[str],
     tested_vars: pd.core.frame.DataFrame,
     confounding_keys: list[str],
+    join_keys: list[str],
+    min_category_size: int,
 ) -> dict[str, dict[str, np.ndarray]]:
     print(f"Using nilearn version {nilearn.__version__}")
     # print(f"{white_matter_mask = }")
@@ -774,13 +810,13 @@ def use_nilearn(
     # Find "fa" and "md" and any others that are added later
     image_subtypes = list(confounding_table["image_subtype"].unique())
 
-    all_subtypes = {}
+    all_subtypes: dict[str, dict[str, np.ndarray]] = {}
     # For each subtype (e.g., "fa" and "md")
     for image_subtype in image_subtypes:
         print(f"{image_subtype = }")
 
         # Create a single data table that includes all confounding_variables and all ksads variables
-        all_information = pd.merge(
+        all_information: pd.core.frame.DataFrame = pd.merge(
             confounding_table[confounding_table["image_subtype"] == image_subtype],
             tested_vars[[*join_keys, *interesting_ksads]],
             on=join_keys,
@@ -788,7 +824,7 @@ def use_nilearn(
             validate="one_to_one",
         )
         # Don't include any images for which we are missing variable information
-        all_information.dropna(inplace=True)
+        all_information = all_information.dropna()
 
         """
         Although pandas is a great way to read and manipulate these data tables, nilearn expects them to be
@@ -798,10 +834,17 @@ def use_nilearn(
         See https://nilearn.github.io/stable/modules/generated/nilearn.mass_univariate.permuted_ols.html
         Create the three main inputs to nilearn.mass_univariate.permuted_ols() as numpy arrays
         """
+
         tested_input: np.ndarray = all_information[interesting_ksads].to_numpy(dtype=float)
         print(f"  {tested_input.shape = }")
 
-        confounding_input: np.ndarray = all_information[confounding_keys].to_numpy(dtype=float)
+        confounding_input_pandas: pd.core.frame.DataFram = all_information[confounding_keys]
+        confounding_input_pandas = confounding_input_pandas.loc[
+            :,
+            large_enough_category_size(confounding_input_pandas, min_category_size)
+            | confounding_input_pandas.columns.isin(join_keys),
+        ]
+        confounding_input: np.ndarray = confounding_input_pandas.to_numpy(dtype=float)
         print(f"  {confounding_input.shape = }")
 
         white_matter_indices: np.ndarray = (white_matter_mask_input.get_fdata() != 0.0).reshape(-1)
@@ -815,7 +858,7 @@ def use_nilearn(
 
         # Set all other input parameters for nilearn.mass_univariate.permuted_ols()
         model_intercept: bool = True
-        n_perm: int = 5000  # TODO: Use 10000
+        n_perm: int = 1000  # TODO: Use 10000
         two_sided_test: bool = True
         random_state = None
         n_jobs: int = -1  # All available
@@ -848,7 +891,7 @@ def use_nilearn(
             threshold=threshold,
             output_type=output_type,
         )
-        # Record the response of nilearn for this sub_type (e.g., "fa" or "md")
+        # Record the response of nilearn for this subtype (e.g., "fa" or "md")
         all_subtypes[image_subtype] = response
     return all_subtypes
 
@@ -863,19 +906,23 @@ confounding_vars_config: dict[str, dict[str, Any]] = {
         "File": "abcd-general/abcd_y_lt.csv",
         "HandleMissing": "invalidate",
         "Type": "ordered",
-        "Longitudinal": ["time", "intercept"],
+        "Longitudinal": ["intercept"],
     },
-    "site_id_l": {"File": "abcd-general/abcd_y_lt.csv", "HandleMissing": "invalidate", "Type": "unordered"},
+    # "site_id_l": {
+    #     "File": "abcd-general/abcd_y_lt.csv",
+    #     "HandleMissing": "invalidate",
+    #     "Type": "unordered",
+    # },
     "demo_gender_id_v2": {
         "File": "gender-identity-sexual-health/gish_p_gi.csv",
         "Convert": {"777": "", "999": ""},
         "HandleMissing": "invalidate",
         "Type": "unordered",
-        "Longitudinal": ["slope", "intercept"],
+        "Longitudinal": ["intercept"],
     },
     # "rel_family_id": {
     #     "File": "abcd-general/abcd_y_lt.csv",
-    #     "HandleMissing": "together",  # TODO: It should be "separately", yes?
+    #     "HandleMissing": "together",
     #     "Type": "unordered",
     # },
 }
@@ -903,7 +950,7 @@ confounding_vars_config: dict[str, dict[str, Any]] = {
 # Load tabular information for counfounding variables
 start = time.time()
 confounding_table_input, confounding_keys_input = merge_confounding_table(
-    confounding_vars_config, coregistered_images_directory
+    confounding_vars_config, coregistered_images_directory, join_keys_global, min_category_size_global
 )
 print(f"{confounding_keys_input = }")
 print(f"{len(confounding_table_input) = }")
@@ -917,13 +964,10 @@ tested_vars_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
 
 
 # +
-# TODO: Make sure that nilearn.masking.compute_brain_mask() is using `threshold` the way we think it does
-mask_threshold: float = 0.70
-
 # Let's commit to use numpy or nilearn.
 if False:
     print("Invoking use_numpy")
-    white_matter_mask_input = get_white_matter_mask_as_numpy(white_matter_mask_file, mask_threshold)
+    white_matter_mask_input = get_white_matter_mask_as_numpy(white_matter_mask_file, mask_threshold_global)
     white_matter_indices: np.ndarray = white_matter_mask_input.copy()
     func = use_numpy
 else:
@@ -931,7 +975,7 @@ else:
     # See https://nilearn.github.io/dev/modules/generated/nilearn.masking.compute_brain_mask.html
     white_matter_mask_input = nilearn.masking.compute_brain_mask(
         target_img=nibabel.load(white_matter_mask_file),
-        threshold=mask_threshold,
+        threshold=mask_threshold_global,
         connected=False,  # TODO: Is this best?
         opening=False,  # False means no image morphological operations.  An int represents an amount of it.
         memory=None,
@@ -944,7 +988,13 @@ else:
 
 start = time.time()
 output_voxels_by_subtype: dict[str, dict[str, np.ndarray]] = func(
-    white_matter_mask_input, confounding_table_input, interesting_ksads_input, tested_vars_input, confounding_keys_input
+    white_matter_mask_input,
+    confounding_table_input,
+    interesting_ksads_input,
+    tested_vars_input,
+    confounding_keys_input,
+    join_keys_global,
+    min_category_size_global,
 )
 print(f"Computed all voxels in time {time.time() - start}s")
 # -
@@ -986,85 +1036,53 @@ else:
     print("Skipped use_numpy output")
 
 
-# +
-def find_good_slice(margins):
-    """
-    For each ksads variable, we want to show an interesting slice of the 3d-data.
-    For example, we choose a slice in the X dimension (i.e., we choose a YZ plane) by designating its x coordinate and
-        its lower and upper bounds for y and z.
-    First step is summing out over the Y and Z dimensions to compute `margins`, which is done before calling
-        find_good_slice().
-    (`margins` is 2-dimensional; it is computed from 4-dimensional data with shape=(number_tested_variables, size_x,
-        size_y, size_z))
-    We then compute:
-        for i in range(list_of_tested_variables):
-            min_[i] = The lowest x for which margins[i, x] is non-zero
-            max_[i] = One more than the largest x for which margins[i, x] is non-zero
-            best_[i] = The (first) value of x that maximizes margins[i, :]
-    This routine works identically for slices in the Y or Z dimensions, so long as margins is supplied by summing out
-    the remaining dimensions.
-    """
-    min_ = np.argmax(margins > 0.0, axis=-1)
-    best_ = np.argmax(margins, axis=-1)
-    max_ = np.argmax(np.cumsum(margins > 0.0, axis=-1), axis=-1) + 1
-    return min_, best_, max_
-
-
 if func == use_nilearn:
     # We used use_nilearn().  Show some values that might help us to sanity check these outputs.  nilearn returned only
     # voxels in the white matter, so we construct images that include background.
-    output_images_by_subtype = {}
+    output_images_by_subtype: dict[str, np.ndarray] = {}
     white_matter_indices = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
     print("## use_nilearn output")
     gamma = 0.01
     if gamma != 1.0:
         print(f"Using contrast adjustment with {gamma = }")
-    for sub_type in output_voxels_by_subtype.keys():
-        print(f"## {sub_type = }")
-        for table in output_voxels_by_subtype[sub_type].keys():
+    for subtype_key, subtype_value in output_voxels_by_subtype.items():
+        print(f"## {subtype_key = }")
+        for table in subtype_value.keys():
             # The three types of table are ['t', 'logp_max_t', 'h0_max_t'].  We're probably most interested in
             # 'logp_max_t'.
             print(f"#### table: {table = }")
             # Show the shape of this output
-            print(
-                f"output_voxels_by_subtype[{sub_type!r}][{table!r}].shape = "
-                f"{output_voxels_by_subtype[sub_type][table].shape}"
-            )
+            print(f"output_voxels_by_subtype[{subtype_key!r}][{table!r}].shape = {subtype_value[table].shape}")
             # Show the sum of all values of this output
-            print(
-                f"np.sum(output_voxels_by_subtype[{sub_type!r}][{table!r}]) = "
-                f"{np.sum(output_voxels_by_subtype[sub_type][table])}"
-            )
+            print(f"np.sum(output_voxels_by_subtype[{subtype_key!r}][{table!r}]) = {np.sum(subtype_value[table])}")
             # Count how many of the values are not NaNs.
             print(
-                f"np.sum(~np.isnan(output_voxels_by_subtype[{sub_type!r}][{table!r}])) = "
-                f"{np.sum(~np.isnan(output_voxels_by_subtype[sub_type][table]))}"
+                f"np.sum(~np.isnan(output_voxels_by_subtype[{subtype_key!r}][{table!r}])) = "
+                f"{np.sum(~np.isnan(subtype_value[table]))}"
             )
             # Ask to see the whole table; though Python cuts out much of it
             # print(
-            #     f"output_voxels_by_subtype[{sub_type!r}][{table!r}] = "
-            #     f"{output_voxels_by_subtype[sub_type][table]}"
+            #     f"output_voxels_by_subtype[{subtype_key!r}][{table!r}] = "
+            #     f"{subtype_value[table]}"
             # )
         print("#### image information")
-        number_tested_vars = output_voxels_by_subtype[sub_type]["logp_max_t"].shape[0]
-        # We will make an output image for each tested variable (i.e., each KSADS variable).
-        # Background is zeros.
-        output_images_for_subtype = np.zeros((number_tested_vars,) + white_matter_mask_input.get_fdata().shape)
+        number_tested_vars = subtype_value["logp_max_t"].shape[0]
+        # We will make an output image for each tested variable (i.e., each KSADS variable).  Background is zeros.
+        output_images_for_subtype: np.ndarray
+        output_images_for_subtype = np.zeros((number_tested_vars, *white_matter_mask_input.get_fdata().shape))
         # Forground is from nilearn
-        output_images_for_subtype.reshape(number_tested_vars, -1)[:, white_matter_indices] = output_voxels_by_subtype[
-            sub_type
-        ]["logp_max_t"]
+        output_images_for_subtype.reshape(number_tested_vars, -1)[:, white_matter_indices] = subtype_value["logp_max_t"]
         # Stash the image into a dictionary that we are building
-        output_images_by_subtype[sub_type] = output_images_for_subtype
+        output_images_by_subtype[subtype_key] = output_images_for_subtype
         # Show the shape of the image
-        print(f"output_images_for_subtype[{sub_type!r}].shape = {output_images_for_subtype.shape}")
+        print(f"output_images_for_subtype[{subtype_key!r}].shape = {output_images_for_subtype.shape}")
         # Show the minimum voxel intensity
-        print(f"np.amin(output_images_for_subtype[{sub_type!r}]) = {np.amin(output_images_for_subtype)}")
+        print(f"np.amin(output_images_for_subtype[{subtype_key!r}]) = {np.amin(output_images_for_subtype)}")
         # Show the maximum voxel intensity
-        print(f"np.amax(output_images_for_subtype[{sub_type!r}]) = {np.amax(output_images_for_subtype)}")
+        print(f"np.amax(output_images_for_subtype[{subtype_key!r}]) = {np.amax(output_images_for_subtype)}")
 
-        # Find interestig slices to plot.
-        # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
+        # Find interestig slices to plot.  For each tested variable (i.e. each KSADS variable), we'll have one X slice,
+        # one Y slice, and one Z slice.
         x_margins = output_images_for_subtype.sum(axis=(2, 3))
         minX, bestX, maxX = find_good_slice(x_margins)
 
@@ -1090,7 +1108,7 @@ if func == use_nilearn:
         # darkest voxels the most.
         for i in range(number_tested_vars):
             # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
-            print(f"{sub_type!r} image X={bestX[i]} slice for {interesting_ksads_input[i]!r}")
+            print(f"{subtype_key!r} image X={bestX[i]} slice for {interesting_ksads_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, bestX[i], minY[i] : maxY[i], minZ[i] : maxZ[i]]
             slice_2d = output_images_for_subtype[i, bestX[i], :, :]
             slice_2d = np.power(slice_2d, gamma)  # Gamma correction
@@ -1098,7 +1116,7 @@ if func == use_nilearn:
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
-            print(f"{sub_type!r} image Y={bestY[i]} slice for {interesting_ksads_input[i]!r}")
+            print(f"{subtype_key!r} image Y={bestY[i]} slice for {interesting_ksads_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], bestY[i], minZ[i] : maxZ[i]]
             slice_2d = output_images_for_subtype[i, :, bestY[i], :]
             slice_2d = np.power(slice_2d, gamma)  # Gamma correction
@@ -1106,7 +1124,7 @@ if func == use_nilearn:
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
-            print(f"{sub_type!r} image Z={bestZ[i]} slice for {interesting_ksads_input[i]!r}")
+            print(f"{subtype_key!r} image Z={bestZ[i]} slice for {interesting_ksads_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], minY[i] : maxY[i], bestZ[i]]
             slice_2d = output_images_for_subtype[i, :, :, bestZ[i]]
             slice_2d = np.power(slice_2d, gamma)  # Gamma correction
