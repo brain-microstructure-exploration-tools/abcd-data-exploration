@@ -36,6 +36,7 @@ import functools
 import math
 import os
 import re
+import sys
 import time
 from typing import Any
 
@@ -328,8 +329,9 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
     or:
         just use values we've computed using this process in the past
     """
-    number_wanted = 5  # TODO: Is 20 a good number?
+    number_ksads_wanted: int = 2  # TODO: Is 20 a good number?
     file_mh_y_ksads_ss: str = "mental-health/mh_y_ksads_ss.csv"
+    interesting_ksads: list[str]
     if True:
         full_path = os.path.join(core_directory, file_mh_y_ksads_ss)
         sorted_entropies = find_interesting_entropies(full_path)
@@ -382,7 +384,7 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
             "ksads_22_969_t",  # Diagnosis - SLEEP PROBLEMS, Present
         ]
 
-    interesting_ksads = interesting_ksads[:number_wanted]
+    interesting_ksads = interesting_ksads[:number_ksads_wanted]
     ksads_vars: tuple[str, list[str]] = (file_mh_y_ksads_ss, interesting_ksads)
     return ksads_vars
 
@@ -428,8 +430,6 @@ def large_enough_category_size(df_var: pd.core.frame.DataFrame, min_category_siz
 def process_confounding_var(
     fieldname: str, details: dict[str, Any], join_keys: list[str], min_category_size: int
 ) -> pd.core.frame.DataFrame:
-    print(f"Starting process_confounding_var({fieldname!r})")
-
     mesgs: list[str] = []
     if "File" not in details:
         mesgs.append(f"The 'File' attribute must be supplied for the fieldname {fieldname!r}.")
@@ -470,24 +470,29 @@ def process_confounding_var(
     df_var: pd.core.frame.DataFrame = csv_file_to_dataframe(os.path.join(core_directory, File))[
         [*join_keys, InternalName]
     ]
+    # print(f"  #01 {df_var.columns = }", flush=True)
 
     # Rename the InternalName column to Fieldname
     if InternalName != Fieldname:
         df_var = df_var.rename(columns={InternalName: Fieldname})
+        # print(f"  #02 {df_var.columns = }", flush=True)
 
     # Perform conversions of values
     for src, dst in Convert.items():
         df_var[Fieldname] = df_var[Fieldname].replace(src, dst)
+        # print(f"    #03 {src} -> {dst}: {df_var.columns = }", flush=True)
 
     # Do the right thing with missing values
     if HandleMissing != "byValue" and len(IsMissing) > 1:
         # Make all missing values equal to IsMissing[0]
         for val in IsMissing[1:]:
             df_var[Fieldname] = df_var[Fieldname].replace(val, IsMissing[0])
+            # print(f"    #04 {val = }: {df_var.columns = }", flush=True)
         IsMissing = IsMissing[:1]
     if HandleMissing == "invalidate" and len(IsMissing):
         # Remove rows for missing values
         df_var = df_var[df_var[Fieldname] != IsMissing[0]]
+        # print(f"  #05 {df_var.columns = }", flush=True)
     if HandleMissing == "together":
         if Type == "unordered":
             # There is nothing more to do.
@@ -500,7 +505,9 @@ def process_confounding_var(
                 mesg = f"Failed to get unique column name for {new_missing_name!r}."
                 raise ValueError(mesg)
             df_var[new_missing_name] = (df_var[Fieldname] == IsMissing[0]).astype(int)
+            # print(f"  #06 {df_var.columns = }", flush=True)
             df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = 0
+            # print(f"  #07 {df_var.columns = }", flush=True)
     if HandleMissing == "byValue":
         if Type == "unordered":
             # There is nothing more to do.
@@ -518,6 +525,8 @@ def process_confounding_var(
             df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = range(
                 unused_numeric_value, unused_numeric_value + number_needed_values
             )
+            # print(f"  #08 {df_var.columns = }", flush=True)
+
         if Type == "ordered":
             # TODO: Do we need to implement this case?
             mesg = 'We do not currently handle the case that HandleMissing == "separately" and Type == "ordered"'
@@ -526,11 +535,16 @@ def process_confounding_var(
     # Convert categorical data to a multicolumn one-hot representation
     if Type == "unordered":
         df_var = pd.get_dummies(df_var, dummy_na=True, columns=[Fieldname], drop_first=False)
+        # print(f"  #09 {df_var.columns = }", flush=True)
+
     # Remove columns that are constant
     df_var = df_var.loc[:, (df_var.nunique() > 1) | df_var.columns.isin(join_keys)]
+    # print(f"  #10 {df_var.columns = }", flush=True)
     # Remove categories with too few members
     df_var = df_var.loc[:, large_enough_category_size(df_var, min_category_size) | df_var.columns.isin(join_keys)]
+    # print(f"  #11 {df_var.columns = }", flush=True)
 
+    print(f"process_confounding_var({fieldname!r}) gives {df_var.columns = }")
     return df_var
 
 
@@ -564,6 +578,9 @@ def process_longitudinal_config(
         for longitudinal in [details.get("Longitudinal", LongitudinalDefault)]
         if "slope" in longitudinal
     ]
+    # print(f"  {has_time = }", flush=True)
+    # print(f"  {has_intercept = }", flush=True)
+    # print(f"  {has_slope = }", flush=True)
 
     mesgs: list[str] = []
     if len(has_time) > 1:
@@ -587,6 +604,7 @@ def process_longitudinal_config(
 
     # We return one dataframe for each fieldname in has_intercept.
     df_intercepts: list[pd.core.frame.DataFrame] = [df_dict[key] for key in has_intercept]
+    # print(f"  {set([col for df in df_intercepts for col in df.columns]) = }", flush=True)
 
     # If we have a "time" variable then we add a dataframe for each fieldname in has_slope (even if fieldname is also in
     # has_intercept).  Note that if df_time also has "slope" then we will get quadratic values in a column.
@@ -617,6 +635,7 @@ def process_longitudinal_config(
             df_merged = df_merged.drop(columns=[*columns_to_process, new_time_name], axis=1)
 
             df_slopes.append(df_merged)
+    # print(f"  {set([col for df in df_slopes for col in df.columns]) = }", flush=True)
 
     return df_intercepts + df_slopes
 
@@ -628,10 +647,17 @@ def make_dataframe_for_confounding_vars(
         fieldname: process_confounding_var(fieldname, details, join_keys, min_category_size)
         for fieldname, details in confounding_vars_config.items()
     }
+    # print(f"  {df_dict.keys() = }", flush=True)
     df_list: list[pd.core.frame.DataFrame] = process_longitudinal_config(confounding_vars_config, df_dict, join_keys)
+    # print(f"  {set([col for df in df_list for col in df.columns]) = }", flush=True)
     df_all_keys: pd.core.frame.DataFrame = df_list[0]
+    # print(f"  #01 {set(df_all_keys.columns) = }", flush=True)
     for df_next in df_list[1:]:
-        df_all_keys.merge(df_next, on=join_keys, how="inner", validate="one_to_one")
+        # print(f"    #02 {set(df_all_keys.columns) = }", flush=True)
+        # print(f"    #03 {set(df_next.columns) = }", flush=True)
+        df_all_keys = pd.merge(df_all_keys, df_next, on=join_keys, how="inner", validate="one_to_one")
+        # print(f"    #04 {set(df_all_keys.columns) = }", flush=True)
+    # print(f"  {df_all_keys.columns = }", flush=True)
     return df_all_keys
 
 
@@ -839,11 +865,13 @@ def use_nilearn(
         print(f"  {tested_input.shape = }")
 
         confounding_input_pandas: pd.core.frame.DataFram = all_information[confounding_keys]
+        # print(f"  {confounding_input_pandas.columns = }", flush=True)
         confounding_input_pandas = confounding_input_pandas.loc[
             :,
             large_enough_category_size(confounding_input_pandas, min_category_size)
             | confounding_input_pandas.columns.isin(join_keys),
         ]
+        # print(f"  {confounding_input_pandas.columns = } (large enough)", flush=True)
         confounding_input: np.ndarray = confounding_input_pandas.to_numpy(dtype=float)
         print(f"  {confounding_input.shape = }")
 
@@ -858,7 +886,7 @@ def use_nilearn(
 
         # Set all other input parameters for nilearn.mass_univariate.permuted_ols()
         model_intercept: bool = True
-        n_perm: int = 1000  # TODO: Use 10000
+        n_perm: int = 100  # TODO: Use 10000
         two_sided_test: bool = True
         random_state = None
         n_jobs: int = -1  # All available
@@ -874,12 +902,16 @@ def use_nilearn(
         threshold = None  # For TFCE, threshold is set to None
         output_type: str = "dict"
 
+        print(f"  {n_perm = }")
+        print(f"  {tfce = }")
+        sys.stdout.flush()
+
         # Ask nilearn to compute our p-values, and apply tfce if tfce==True.
         # TODO: Consider using nilearn.glm.second_level.non_parametric_inference() instead
         response: dict[str, np.ndarray] = nilearn.mass_univariate.permuted_ols(
-            tested_vars=tested_input,
-            target_vars=target_input,
-            confounding_vars=confounding_input,
+            tested_vars=tested_input,  # ksads
+            target_vars=target_input,  # voxels
+            confounding_vars=confounding_input,  # e.g., interview_age
             model_intercept=model_intercept,
             n_perm=n_perm,
             two_sided_test=two_sided_test,
