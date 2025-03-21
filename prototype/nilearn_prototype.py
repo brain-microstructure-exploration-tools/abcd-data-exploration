@@ -27,6 +27,13 @@
 # ```
 # Then, once Jupyter is open with this lab notebook, "Change Kernel..." to be "abcd311".
 
+# ## Creating a Jupyter lab notebook from a Python file
+# Use a command like
+# ```bash
+# jupytext --to ipynb nilearn_prototype.py
+# ```
+# to create `nilearn_prototype.ipynb`, which can be run in Jupyter.
+
 # ## Import dependent Python packages
 
 # Import from Python packages
@@ -309,11 +316,7 @@ def find_interesting_entropies(file_mh_y_ksads_ss: str):
 
     entropies: dict[str, float] = entropy_of_all_columns(counts_for_each_column_mh_y_ksads_ss)
     sorted_entropies: dict[str, Any] = dict(sorted(entropies.items(), key=lambda item: item[1], reverse=True))
-    sorted_entropies = {
-        key: (value, counts_for_each_column_mh_y_ksads_ss[key])
-        for key, value in sorted_entropies.items()
-        # if bool(re.match("ksads_\d", key))
-    }
+    # print(f"{sorted_entropies = }", flush=True)
     print("Entropy calculation done")
     return sorted_entropies
 
@@ -329,7 +332,7 @@ def find_interesting_ksads() -> tuple[str, list[str]]:
     or:
         just use values we've computed using this process in the past
     """
-    number_ksads_wanted: int = 2  # TODO: Is 20 a good number?
+    number_ksads_wanted: int = 20  # TODO: Is 20 a good number?
     file_mh_y_ksads_ss: str = "mental-health/mh_y_ksads_ss.csv"
     interesting_ksads: list[str]
     if True:
@@ -751,6 +754,7 @@ def use_numpy(
         }
 
         # TODO: Here would be a good place to use the equivalent of large_enough_category_size(min_category_size)
+        del min_category_size
 
         # Process the ksads_keys one by one
         all_ksads_keys: dict[str, np.ndarray] = {}
@@ -861,17 +865,19 @@ def use_nilearn(
         Create the three main inputs to nilearn.mass_univariate.permuted_ols() as numpy arrays
         """
 
-        tested_input: np.ndarray = all_information[interesting_ksads].to_numpy(dtype=float)
+        tested_input_pandas: pd.core.frame.DataFrame = all_information[interesting_ksads]
+        print(f"  {tested_input_pandas.columns = }")
+        tested_input: np.ndarray = tested_input_pandas.to_numpy(dtype=float)
         print(f"  {tested_input.shape = }")
 
-        confounding_input_pandas: pd.core.frame.DataFram = all_information[confounding_keys]
-        # print(f"  {confounding_input_pandas.columns = }", flush=True)
+        confounding_input_pandas: pd.core.frame.DataFrame = all_information[confounding_keys]
+        # print(f"  {confounding_input_pandas.columns = } (penultimate)")
         confounding_input_pandas = confounding_input_pandas.loc[
             :,
             large_enough_category_size(confounding_input_pandas, min_category_size)
             | confounding_input_pandas.columns.isin(join_keys),
         ]
-        # print(f"  {confounding_input_pandas.columns = } (large enough)", flush=True)
+        print(f"  {confounding_input_pandas.columns = }", flush=True)
         confounding_input: np.ndarray = confounding_input_pandas.to_numpy(dtype=float)
         print(f"  {confounding_input.shape = }")
 
@@ -898,8 +904,9 @@ def use_nilearn(
         # within nilearn.  Maybe we are okay without doing that:
         _ = masker.transform(white_matter_mask)
         # TODO: Should tfce be True here, or instead at a second-level analysis (using non_parametric_inference).
-        tfce: bool = True
-        threshold = None  # For TFCE, threshold is set to None
+        tfce: bool = False
+        # TODO: How should we set `threshold`.  (For TFCE==True, it should be `None`.)
+        threshold = None
         output_type: str = "dict"
 
         print(f"  {n_perm = }")
@@ -938,19 +945,20 @@ confounding_vars_config: dict[str, dict[str, Any]] = {
         "File": "abcd-general/abcd_y_lt.csv",
         "HandleMissing": "invalidate",
         "Type": "ordered",
+        "Longitudinal": ["time", "intercept"],
+    },
+    "site_id_l": {
+        "File": "abcd-general/abcd_y_lt.csv",
+        "HandleMissing": "invalidate",
+        "Type": "unordered",
         "Longitudinal": ["intercept"],
     },
-    # "site_id_l": {
-    #     "File": "abcd-general/abcd_y_lt.csv",
-    #     "HandleMissing": "invalidate",
-    #     "Type": "unordered",
-    # },
     "demo_gender_id_v2": {
         "File": "gender-identity-sexual-health/gish_p_gi.csv",
         "Convert": {"777": "", "999": ""},
         "HandleMissing": "invalidate",
         "Type": "unordered",
-        "Longitudinal": ["intercept"],
+        "Longitudinal": ["intercept", "slope"],
     },
     # "rel_family_id": {
     #     "File": "abcd-general/abcd_y_lt.csv",
