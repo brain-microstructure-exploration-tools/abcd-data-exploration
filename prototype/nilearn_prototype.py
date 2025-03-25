@@ -68,6 +68,7 @@ white_matter_mask_file: str = os.path.join(gor_image_directory, "gortemplate0.ni
 coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory: str = os.path.join(tabular_data_directory, "core")
+an_output_file_name: str = "/home/local/KHQ/lee.newberg/demo_gender_id_v2==1.0.nii.gz"
 
 # Useful class static const members
 
@@ -721,19 +722,19 @@ def find_good_slice(margins):
 
 # How we might process the inputs using numpy
 def use_numpy(
-    white_matter_mask: np.ndarray,
-    confounding_table: pd.core.frame.DataFrame,
-    interesting_ksads: list[str],
-    tested_vars: pd.core.frame.DataFrame,
     confounding_keys: list[str],
+    confounding_table: pd.core.frame.DataFrame,
+    tested_keys: list[str],
+    tested_table: pd.core.frame.DataFrame,
     join_keys: list[str],
     min_category_size: int,
+    white_matter_mask: np.ndarray,
 ) -> dict[str, dict[str, np.ndarray]]:
     # print(f"{white_matter_mask = }")
     # # confounding_table has columns *counfounding_vars, src_subject_id, eventname, image_subtype, filename
     # print(f"{confounding_table = }")
-    # print(f"{interesting_ksads = }")  # list of str of selected ksads
-    # print(f"{tested_vars = }")  # Dataframe across all ksads
+    # print(f"{tested_keys = }")  # list of str of selected ksads
+    # print(f"{tested_table = }")  # Dataframe across all ksads
     # print(f"{confounding_keys = }")  # list of str of confounding keys
 
     # Find "fa" and "md" and any others that are added later
@@ -758,12 +759,12 @@ def use_numpy(
 
         # Process the ksads_keys one by one
         all_ksads_keys: dict[str, np.ndarray] = {}
-        for ksads_key in interesting_ksads:
+        for ksads_key in tested_keys:
             print(f"    {ksads_key = }")
             # Merge tables for confounding variables and this ksads variable
             augmented_information: pd.core.frame.DataFrame = pd.merge(
                 subtype_information,
-                tested_vars[[*join_keys, ksads_key]],
+                tested_table[[*join_keys, ksads_key]],
                 on=join_keys,
                 how="inner",
                 validate="one_to_one",
@@ -821,20 +822,20 @@ def use_numpy(
 
 # How we might process the inputs using nilearn.mass_univariate.permuted_ols()
 def use_nilearn(
-    white_matter_mask: nibabel.nifti1.Nifti1Image,
-    confounding_table: pd.core.frame.DataFrame,
-    interesting_ksads: list[str],
-    tested_vars: pd.core.frame.DataFrame,
     confounding_keys: list[str],
+    confounding_table: pd.core.frame.DataFrame,
+    tested_keys: list[str],
+    tested_table: pd.core.frame.DataFrame,
     join_keys: list[str],
     min_category_size: int,
+    white_matter_mask: nibabel.nifti1.Nifti1Image,
 ) -> dict[str, dict[str, np.ndarray]]:
     print(f"Using nilearn version {nilearn.__version__}")
     # print(f"{white_matter_mask = }")
     # # confounding_table has columns *counfounding_vars, src_subject_id, eventname, image_subtype, filename
     # print(f"{confounding_table = }")
-    # print(f"{interesting_ksads = }")  # list of str of selected ksads
-    # print(f"{tested_vars = }")  # Dataframe across all ksads
+    # print(f"{tested_keys = }")  # list of str of selected ksads
+    # print(f"{tested_table = }")  # Dataframe across all ksads
     # print(f"{confounding_keys = }")  # list of str of confounding keys
 
     # Find "fa" and "md" and any others that are added later
@@ -848,7 +849,7 @@ def use_nilearn(
         # Create a single data table that includes all confounding_variables and all ksads variables
         all_information: pd.core.frame.DataFrame = pd.merge(
             confounding_table[confounding_table["image_subtype"] == image_subtype],
-            tested_vars[[*join_keys, *interesting_ksads]],
+            tested_table[[*join_keys, *tested_keys]],
             on=join_keys,
             how="inner",
             validate="one_to_one",
@@ -865,7 +866,7 @@ def use_nilearn(
         Create the three main inputs to nilearn.mass_univariate.permuted_ols() as numpy arrays
         """
 
-        tested_input_pandas: pd.core.frame.DataFrame = all_information[interesting_ksads]
+        tested_input_pandas: pd.core.frame.DataFrame = all_information[tested_keys]
         print(f"  {tested_input_pandas.columns = }")
         tested_input: np.ndarray = tested_input_pandas.to_numpy(dtype=float)
         print(f"  {tested_input.shape = }")
@@ -945,20 +946,20 @@ confounding_vars_config: dict[str, dict[str, Any]] = {
         "File": "abcd-general/abcd_y_lt.csv",
         "HandleMissing": "invalidate",
         "Type": "ordered",
-        "Longitudinal": ["time", "intercept"],
-    },
-    "site_id_l": {
-        "File": "abcd-general/abcd_y_lt.csv",
-        "HandleMissing": "invalidate",
-        "Type": "unordered",
         "Longitudinal": ["intercept"],
     },
+    # "site_id_l": {
+    #     "File": "abcd-general/abcd_y_lt.csv",
+    #     "HandleMissing": "invalidate",
+    #     "Type": "unordered",
+    #     "Longitudinal": ["intercept"],
+    # },
     "demo_gender_id_v2": {
         "File": "gender-identity-sexual-health/gish_p_gi.csv",
         "Convert": {"777": "", "999": ""},
         "HandleMissing": "invalidate",
         "Type": "unordered",
-        "Longitudinal": ["intercept", "slope"],
+        "Longitudinal": ["intercept"],
     },
     # "rel_family_id": {
     #     "File": "abcd-general/abcd_y_lt.csv",
@@ -997,8 +998,8 @@ print(f"{len(confounding_table_input) = }")
 print(f"Total time to load confounding information = {time.time() - start}s")
 
 # Load KSADS variables information.  This is slow if not cached.
-file_mh_y_ksads_ss_input, interesting_ksads_input = find_interesting_ksads()
-tested_vars_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
+file_mh_y_ksads_ss_input, tested_keys_input = find_interesting_ksads()
+tested_table_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
 # -
 # ## Run the workflow
 
@@ -1008,7 +1009,7 @@ tested_vars_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
 if False:
     print("Invoking use_numpy")
     white_matter_mask_input = get_white_matter_mask_as_numpy(white_matter_mask_file, mask_threshold_global)
-    white_matter_indices: np.ndarray = white_matter_mask_input.copy()
+    # white_matter_indices: np.ndarray = white_matter_mask_input.copy()
     func = use_numpy
 else:
     print("Invoking use_nilearn")
@@ -1023,18 +1024,38 @@ else:
         mask_type="wm",  # "whole-brain", "gm" (gray matter), "wm" (white matter)
     )
     print(f"Number of white_matter voxels = {np.sum(white_matter_mask_input.get_fdata())}")
-    white_matter_indices = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
+    # white_matter_indices = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
     func = use_nilearn
+
+if True:
+    # Move demo_gender_id_v2_1.0 from confounding_table_input to tested_table_input.  Note that confounding_table_input
+    # has subtype information but tested_table_input does not.
+    var_prefix = "demo_gender_id_v2_"
+    var_name = var_prefix + "1.0"
+    if var_name in confounding_table_input.columns:
+        print(f"{confounding_table_input.columns = }")
+        tested_keys_input = [var_name, *tested_keys_input]
+        tested_table_input = pd.merge(
+            tested_table_input,
+            confounding_table_input[[*join_keys_global, var_name]].drop_duplicates(),
+            on=join_keys_global,
+            how="inner",
+            validate="one_to_one",
+        )
+        confounding_keys_input = [key for key in confounding_keys_input if not key.startswith(var_prefix)]
+        confounding_table_input = confounding_table_input.drop(
+            columns=[col for col in confounding_table_input.columns if col.startswith(var_prefix)]
+        )
 
 start = time.time()
 output_voxels_by_subtype: dict[str, dict[str, np.ndarray]] = func(
-    white_matter_mask_input,
-    confounding_table_input,
-    interesting_ksads_input,
-    tested_vars_input,
     confounding_keys_input,
+    confounding_table_input,
+    tested_keys_input,
+    tested_table_input,
     join_keys_global,
     min_category_size_global,
+    white_matter_mask_input,
 )
 print(f"Computed all voxels in time {time.time() - start}s")
 # -
@@ -1080,7 +1101,7 @@ if func == use_nilearn:
     # We used use_nilearn().  Show some values that might help us to sanity check these outputs.  nilearn returned only
     # voxels in the white matter, so we construct images that include background.
     output_images_by_subtype: dict[str, np.ndarray] = {}
-    white_matter_indices = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
+    white_matter_indices: np.ndarray = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
     print("## use_nilearn output")
     gamma = 0.01
     if gamma != 1.0:
@@ -1147,8 +1168,11 @@ if func == use_nilearn:
         # Set gamma to, e.g., 0.1 or 0.01 to change the contrast of the image.  Lower values of gamma brighten the
         # darkest voxels the most.
         for i in range(number_tested_vars):
+            if subtype_key == "fa" and tested_keys_input[i] == var_name:
+                dipy.io.image.save_nifti(an_output_file_name, output_images_for_subtype[i, :, :, :], np.eye(4))
+
             # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
-            print(f"{subtype_key!r} image X={bestX[i]} slice for {interesting_ksads_input[i]!r}")
+            print(f"{subtype_key!r} image X={bestX[i]} slice for {tested_keys_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, bestX[i], minY[i] : maxY[i], minZ[i] : maxZ[i]]
             slice_2d = output_images_for_subtype[i, bestX[i], :, :]
             slice_2d = np.power(slice_2d, gamma)  # Gamma correction
@@ -1156,7 +1180,7 @@ if func == use_nilearn:
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
-            print(f"{subtype_key!r} image Y={bestY[i]} slice for {interesting_ksads_input[i]!r}")
+            print(f"{subtype_key!r} image Y={bestY[i]} slice for {tested_keys_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], bestY[i], minZ[i] : maxZ[i]]
             slice_2d = output_images_for_subtype[i, :, bestY[i], :]
             slice_2d = np.power(slice_2d, gamma)  # Gamma correction
@@ -1164,7 +1188,7 @@ if func == use_nilearn:
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
-            print(f"{subtype_key!r} image Z={bestZ[i]} slice for {interesting_ksads_input[i]!r}")
+            print(f"{subtype_key!r} image Z={bestZ[i]} slice for {tested_keys_input[i]!r}")
             # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], minY[i] : maxY[i], bestZ[i]]
             slice_2d = output_images_for_subtype[i, :, :, bestZ[i]]
             slice_2d = np.power(slice_2d, gamma)  # Gamma correction
