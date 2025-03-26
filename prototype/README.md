@@ -11,4 +11,3 @@ Scripts include:
 
 - nilearn_exploration.py: Built from an [example from nilearn](https://nilearn.github.io/stable/auto_examples/05_glm_second_level/plot_second_level_association_test.html)
 - nilearn_prototype.py: A full workflow that reads ABCD data, processes it, and displays outputs. Processing with nilearn is debugged.  Processing with numpy is supported, but not quite as complete.
-- prototype.py: The version of nilearn_prototype.py prior to implementing functionality to use nilearn.
