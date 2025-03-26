@@ -14,13 +14,17 @@
 # ---
 
 # +
+from __future__ import annotations
+
+import matplotlib.pyplot as plt
 import nilearn
 import nilearn.datasets
 import nilearn.plotting
 import numpy as np
+from nilearn import plotting
 from nilearn._utils.helpers import check_matplotlib
-from nilearn.maskers import NiftiMasker
-from nilearn.mass_univariate import permuted_ols
+from nilearn.image import get_data
+from sklearn.feature_selection import f_regression
 
 check_matplotlib()
 # -
@@ -35,7 +39,7 @@ localizer_dataset = nilearn.datasets.fetch_localizer_contrasts(
 )
 
 # print basic information on the dataset
-print("First contrast nifti image (3D) is located " f"at: {localizer_dataset.cmaps[0]}")
+print(f"First contrast nifti image (3D) is located at: {localizer_dataset.cmaps[0]}")
 
 tested_var = localizer_dataset.ext_vars["pseudo"]
 
@@ -51,7 +55,6 @@ nifti_masker = nilearn.maskers.NiftiMasker(smoothing_fwhm=5, memory="nilearn_cac
 fmri_masked = nifti_masker.fit_transform(contrast_map_filenames)
 
 # +
-from sklearn.feature_selection import f_regression
 
 _, pvals_anova = f_regression(fmri_masked, tested_var, center=True)
 pvals_anova *= fmri_masked.shape[1]
@@ -80,20 +83,11 @@ neg_log_pvals_tfce_unmasked = nifti_masker.inverse_transform(
 )
 
 # +
-import matplotlib.pyplot as plt
-
-from nilearn import plotting
-from nilearn.image import get_data
-
 # Various plotting parameters
 z_slice = 12  # plotted slice
 threshold = -np.log10(0.1)  # 10% corrected
 
-vmax = max(
-    np.amax(ols_outputs["logp_max_t"]),
-    np.amax(neg_log_pvals_anova),
-    np.amax(ols_outputs["logp_max_tfce"]),
-)
+vmax = max(np.amax(ols_outputs["logp_max_t"]), np.amax(neg_log_pvals_anova), np.amax(ols_outputs["logp_max_tfce"]))
 
 images_to_plot = {
     "Parametric Test\n(Bonferroni FWE)": neg_log_pvals_anova_unmasked,
