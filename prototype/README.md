@@ -9,5 +9,5 @@ jupytext --to ipynb my_file.py
 
 Scripts include:
 
-- nilearn_exploration.py: Built from an [example from nilearn](https://nilearn.github.io/stable/auto_examples/05_glm_second_level/plot_second_level_association_test.html)
-- nilearn_prototype.py: A full workflow that reads ABCD data, processes it, and displays outputs. Processing with nilearn is debugged.  Processing with numpy is supported, but not quite as complete.
+- **nilearn_exploration.py** - Built from an [example from nilearn](https://nilearn.github.io/stable/auto_examples/05_glm_second_level/plot_second_level_association_test.html)
+- **nilearn_prototype.py** - A full workflow that reads ABCD data, processes it, and displays outputs. Processing with nilearn is debugged.  Processing with numpy is supported, but not quite as complete.
