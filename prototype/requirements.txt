@@ -1,0 +1,7 @@
+dipy
+matplotlib
+nibabel
+nilearn
+numpy
+pandas
+statsmodels
