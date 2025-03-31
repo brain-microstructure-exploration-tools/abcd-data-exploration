@@ -64,6 +64,7 @@ import pandas as pd
 # +
 # Set global parameters to match your environment.  Ultimately these will be member variables of a class.
 gor_image_directory: str = "/data2/ABCD/gor-images"
+# TODO: We may need separate white_matter_mask_file files for "fa" and "md"
 white_matter_mask_file: str = os.path.join(gor_image_directory, "gortemplate0.nii.gz")
 coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
@@ -158,7 +159,7 @@ def get_data_from_image_files(list_of_files: list[str]) -> list[Any]:
     The latter 3 values in the tuple are the return from load_nifti.
         <class 'str'>: full file name
         <class 'numpy.ndarray'>: image data as a numpy array
-        <class 'numpy.ndarray'>: some other numpy array (transform?)
+        <class 'numpy.ndarray'>: affine transform as a numpy array
         <class 'nibabel.nifti1.Nifti1Image'>: an object that can be modified and can be written to
                file as a .nii.gz file
     """
@@ -171,10 +172,12 @@ def get_white_matter_mask_as_numpy(white_matter_mask_file: str, mask_threshold: 
     # analyses.  The mask is flattened to a single dimension because our analysis software indexes voxels this way We
     # determine white matter by looking at the white_matter_mask_file for voxels that have an intensity above a
     # threshold.
-    white_matter_mask_input: np.ndarray = get_data_from_image_files([white_matter_mask_file])[0][1]
+    white_matter_mask_data = get_data_from_image_files([white_matter_mask_file])[0]
+    white_matter_mask_input: np.ndarray = white_matter_mask_data[1]
+    white_matter_mask_affine: np.ndarray = white_matter_mask_data[2]
     white_matter_mask: np.ndarray = (white_matter_mask_input >= mask_threshold).reshape(-1)
     print(f"Number of white matter voxels = {np.sum(white_matter_mask)}")
-    return white_matter_mask
+    return white_matter_mask, white_matter_mask_affine
 
 
 # +
@@ -1008,14 +1011,18 @@ tested_table_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
 # Let's commit to use numpy or nilearn.
 if False:
     print("Invoking use_numpy")
-    white_matter_mask_input = get_white_matter_mask_as_numpy(white_matter_mask_file, mask_threshold_global)
+    white_matter_mask_input, white_matter_mask_affine = get_white_matter_mask_as_numpy(
+        white_matter_mask_file, mask_threshold_global
+    )
     # white_matter_indices: np.ndarray = white_matter_mask_input.copy()
     func = use_numpy
 else:
     print("Invoking use_nilearn")
     # See https://nilearn.github.io/dev/modules/generated/nilearn.masking.compute_brain_mask.html
+    target_img = nibabel.load(white_matter_mask_file)
+    white_matter_mask_affine = target_img.affine
     white_matter_mask_input = nilearn.masking.compute_brain_mask(
-        target_img=nibabel.load(white_matter_mask_file),
+        target_img=target_img,
         threshold=mask_threshold_global,
         connected=False,  # TODO: Is this best?
         opening=False,  # False means no image morphological operations.  An int represents an amount of it.
@@ -1169,7 +1176,9 @@ if func == use_nilearn:
         # darkest voxels the most.
         for i in range(number_tested_vars):
             if subtype_key == "fa" and tested_keys_input[i] == var_name:
-                dipy.io.image.save_nifti(an_output_file_name, output_images_for_subtype[i, :, :, :], np.eye(4))
+                dipy.io.image.save_nifti(
+                    an_output_file_name, output_images_for_subtype[i, :, :, :], white_matter_mask_affine
+                )
 
             # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
             print(f"{subtype_key!r} image X={bestX[i]} slice for {tested_keys_input[i]!r}")
