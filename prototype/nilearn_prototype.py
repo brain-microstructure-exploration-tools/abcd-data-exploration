@@ -45,7 +45,8 @@ import os
 import re
 import sys
 import time
-from typing import Any
+from re import Match
+from typing import Any, cast
 
 import dipy.io.image
 import matplotlib.pyplot
@@ -64,8 +65,8 @@ import pandas as pd
 # +
 # Set global parameters to match your environment.  Ultimately these will be member variables of a class.
 gor_image_directory: str = "/data2/ABCD/gor-images"
-# TODO: We may need separate white_matter_mask_file files for "fa" and "md"
-white_matter_mask_file: str = os.path.join(gor_image_directory, "gortemplate0.nii.gz")
+# TODO: We may need separate compute_white_matter_mask_from_file files for "fa" and "md"
+compute_white_matter_mask_from_file: str = os.path.join(gor_image_directory, "gortemplate0.nii.gz")
 coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory: str = os.path.join(tabular_data_directory, "core")
@@ -131,7 +132,7 @@ def parse_image_filenames(list_of_image_files: list[str]) -> pd.core.frame.DataF
     # Parse the basename of each filename and use it to construct a row of the `response` dataframe
     response: pd.core.frame.DataFrame = pd.DataFrame(
         [
-            [filename, *list(re.match(filename_pattern, os.path.basename(filename)).groups())]
+            [filename, *list(cast(Match[str], re.match(filename_pattern, os.path.basename(filename))).groups())]
             for filename in list_of_image_files
         ],
         columns=filename_keys,
@@ -167,17 +168,19 @@ def get_data_from_image_files(list_of_files: list[str]) -> list[Any]:
     return response
 
 
-def get_white_matter_mask_as_numpy(white_matter_mask_file: str, mask_threshold: float) -> np.ndarray:
+def get_white_matter_mask_as_numpy(
+    compute_white_matter_mask_from_file: str, mask_threshold: float
+) -> tuple[np.ndarray, np.ndarray]:
     # The return value is a np.ndarray of bool, a voxel mask that indicates which voxels are to be kept for subsequent
     # analyses.  The mask is flattened to a single dimension because our analysis software indexes voxels this way We
-    # determine white matter by looking at the white_matter_mask_file for voxels that have an intensity above a
-    # threshold.
-    white_matter_mask_data = get_data_from_image_files([white_matter_mask_file])[0]
-    white_matter_mask_input: np.ndarray = white_matter_mask_data[1]
-    white_matter_mask_affine: np.ndarray = white_matter_mask_data[2]
-    white_matter_mask: np.ndarray = (white_matter_mask_input >= mask_threshold).reshape(-1)
+    # determine white matter by looking at the compute_white_matter_mask_from_file for voxels that have an intensity
+    # above a threshold.
+    source_data = get_data_from_image_files([compute_white_matter_mask_from_file])[0]
+    source_voxels: np.ndarray = source_data[1]
+    source_affine: np.ndarray = source_data[2]
+    white_matter_mask: np.ndarray = (source_voxels >= mask_threshold).reshape(-1)
     print(f"Number of white matter voxels = {np.sum(white_matter_mask)}")
-    return white_matter_mask, white_matter_mask_affine
+    return white_matter_mask, source_affine
 
 
 # +
@@ -256,7 +259,7 @@ def ksads_filename_to_dataframe(file_mh_y_ksads_ss: str, use_cache: bool = True)
         # Place the computed table in the cache
         ksads_filename_to_dataframe.df_mh_y_ksads_ss = df_mh_y_ksads_ss
         print(f"Read KSADS data file in {time.time() - start}s")
-    # Return what is now in the cache
+        # Return what is now in the cache
     return ksads_filename_to_dataframe.df_mh_y_ksads_ss
 
 
@@ -639,10 +642,10 @@ def process_longitudinal_config(
                     mesg = f"Failed to get unique column name for {new_slope_name!r}."
                     raise ValueError(mesg)
                 df_merged[new_slope_name] = df_merged[column] * df_merged[new_time_name]
-            df_merged = df_merged.drop(columns=[*columns_to_process, new_time_name], axis=1)
+                df_merged = df_merged.drop(columns=[*columns_to_process, new_time_name], axis=1)
 
             df_slopes.append(df_merged)
-    # print(f"  {set([col for df in df_slopes for col in df.columns]) = }", flush=True)
+            # print(f"  {set([col for df in df_slopes for col in df.columns]) = }", flush=True)
 
     return df_intercepts + df_slopes
 
@@ -664,7 +667,7 @@ def make_dataframe_for_confounding_vars(
         # print(f"    #03 {set(df_next.columns) = }", flush=True)
         df_all_keys = pd.merge(df_all_keys, df_next, on=join_keys, how="inner", validate="one_to_one")
         # print(f"    #04 {set(df_all_keys.columns) = }", flush=True)
-    # print(f"  {df_all_keys.columns = }", flush=True)
+        # print(f"  {df_all_keys.columns = }", flush=True)
     return df_all_keys
 
 
@@ -818,7 +821,7 @@ def use_numpy(
 
             # Stash the computed image in a dict that we will return
             all_ksads_keys[ksads_key] = output_image
-        # Stash this dict of images in a dict that we will return
+            # Stash this dict of images in a dict that we will return
         all_subtypes[image_subtype] = all_ksads_keys
     return all_subtypes
 
@@ -905,7 +908,7 @@ def use_nilearn(
         masker = nilearn.maskers.NiftiMasker(white_matter_mask)
         masker.fit()
         # Some web pages say that we must invoke masker.transform in order to have masker.inverse_transform available
-        # within nilearn.  Maybe we are okay without doing that:
+        # within nilearn.
         _ = masker.transform(white_matter_mask)
         # TODO: Should tfce be True here, or instead at a second-level analysis (using non_parametric_inference).
         tfce: bool = False
@@ -1012,14 +1015,13 @@ tested_table_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
 if False:
     print("Invoking use_numpy")
     white_matter_mask_input, white_matter_mask_affine = get_white_matter_mask_as_numpy(
-        white_matter_mask_file, mask_threshold_global
+        compute_white_matter_mask_from_file, mask_threshold_global
     )
-    # white_matter_indices: np.ndarray = white_matter_mask_input.copy()
     func = use_numpy
 else:
     print("Invoking use_nilearn")
     # See https://nilearn.github.io/dev/modules/generated/nilearn.masking.compute_brain_mask.html
-    target_img = nibabel.load(white_matter_mask_file)
+    target_img = nibabel.load(compute_white_matter_mask_from_file)
     white_matter_mask_affine = target_img.affine
     white_matter_mask_input = nilearn.masking.compute_brain_mask(
         target_img=target_img,
@@ -1031,7 +1033,6 @@ else:
         mask_type="wm",  # "whole-brain", "gm" (gray matter), "wm" (white matter)
     )
     print(f"Number of white_matter voxels = {np.sum(white_matter_mask_input.get_fdata())}")
-    # white_matter_indices = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
     func = use_nilearn
 
 if True:
