@@ -14,8 +14,10 @@ descriptions of that region.  Instead of a value of 0 for background and 1 for f
 in the range [0, 1] at each voxel to represent the fraction of input images that had a value of 1 at that voxel.
 
 As a second step, this script looks at all brain regions together and labels a voxel with the region with the highest
-claim.  However, if no region assigns it a value >50% then the voxel is given the label of -1, for background.
+claim.  However, if no region assigns it a value >50% then the voxel is given the label of background_index, for
+background.
 """
+from __future__ import annotations
 
 import glob
 from typing import Any
@@ -44,8 +46,9 @@ labels: list[str] = [
     "T_PAR_right", "T_POSTC_left", "T_POSTC_right", "T_PREC_left", "T_PREC_right", "T_PREF_left", "T_PREF_right",
     "T_PREM_left", "T_PREM_right", "UF_left", "UF_right",
 ]
+background_index: int = 0
 segment_descriptions: list[dict[str, Any]] = [
-    dict(id=f"Segment_{i}", labelValue=i, name=label) for i, label in enumerate(labels)
+    dict(id=f"Segment_{i}", labelValue=i, name=label) for i, label in enumerate(["Background", *labels], background_index)
 ]
 
 output_of_source_types: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -78,10 +81,12 @@ for source_type in source_types:
 
     print("  Combining segmentations", flush=True)
     source_img_voxels = np.stack([e[0] for e in mean_arrays_of_segments], axis=0).astype(np.float64)
-    argmax_claim: NDArray[np.int32] = np.argmax(source_img_voxels, axis=0).astype(np.int32)
+    # For argmax, map 0 to the lowest foreground index, which is background_index + 1
+    argmax_claim: NDArray[np.int32] = np.argmax(source_img_voxels, axis=0).astype(np.int32) + (background_index + 1)
     max_claim: NDArray[np.float64] = np.amax(source_img_voxels, axis=0)
     threshold: float = 0.5
-    argmax_claim[max_claim <= threshold] = -1
+    # Set poorly claimed voxels to Background
+    argmax_claim[max_claim <= threshold] = background_index
 
     print("  Writing output files", flush=True)
     source_img: dict[str, Any] = {**mean_arrays_of_segments[0][1]}
