@@ -59,6 +59,8 @@ import nilearn.masking
 import nilearn.mass_univariate
 import numpy as np
 import pandas as pd
+import scipy.signal
+import slicerio
 
 # ## Set global variables
 
@@ -70,7 +72,11 @@ compute_white_matter_mask_from_file: str = os.path.join(gor_image_directory, "go
 coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory: str = os.path.join(tabular_data_directory, "core")
-an_output_file_name: str = "/home/local/KHQ/lee.newberg/demo_gender_id_v2==1.0.nii.gz"
+an_output_filename: str = "/home/local/KHQ/lee.newberg/demo_gender_id_v2==1.0.nii.gz"
+fa_segmentation_filename: str = (
+    "/home/local/KHQ/lee.newberg/git/brain-microstructure-exploration-tools/abcd-data-exploration/prototype/"
+    "segmentation_labelmap_mrtrix.seg.nrrd"
+)
 
 # Useful class static const members
 
@@ -702,7 +708,7 @@ def merge_confounding_table(
     return df_all_images, confounding_keys
 
 
-# -
+# +
 def find_good_slice(margins):
     """
     For each ksads variable, we want to show an interesting slice of the 3d-data.
@@ -724,6 +730,50 @@ def find_good_slice(margins):
     best_ = np.argmax(margins, axis=-1)
     max_ = np.argmax(np.cumsum(margins > 0.0, axis=-1), axis=-1) + 1
     return min_, best_, max_
+
+
+def find_local_maxima(voxels: np.ndarray, threshold: float, order: int) -> list[tuple[int, int, int]]:
+    """
+    Find the locations of each voxels whose intensity value exceeds or equals all its neighbors.  Another voxel is a
+    neighbor if each of its three coordinates is within `order` in value.
+    """
+    shapex, shapey, shapez = voxels.shape
+    maxima: list[tuple[int, int, int]] = [
+        (x, y, z)
+        for x, y, z in {
+            (x, y, int(z))
+            for x in range(shapex)
+            for y in range(shapey)
+            for z in scipy.signal.argrelextrema(voxels[x, y, :], np.greater_equal, order=order)[0]
+        }
+        | {
+            (x, int(y), z)
+            for x in range(shapex)
+            for z in range(shapez)
+            for y in scipy.signal.argrelextrema(voxels[x, :, z], np.greater_equal, order=order)[0]
+        }
+        | {
+            (int(x), y, z)
+            for y in range(shapey)
+            for z in range(shapez)
+            for x in scipy.signal.argrelextrema(voxels[:, y, z], np.greater_equal, order=order)[0]
+        }
+        if voxels[x, y, z] > threshold
+        for neighborhood in [
+            voxels[
+                max(0, x - order) : min(shapex, x + order + 1),
+                max(0, y - order) : min(shapey, y + order + 1),
+                max(0, z - order) : min(shapez, z + order + 1),
+            ]
+        ]
+        if voxels[x, y, z] == np.max(neighborhood)
+    ]
+    # Sort from highest intensity to lowest
+    maxima.sort(key=lambda xyz: -voxels[xyz[0], xyz[1], xyz[2]])
+    return maxima
+
+
+# -
 
 
 # How we might process the inputs using numpy
@@ -899,7 +949,7 @@ def use_nilearn(
 
         # Set all other input parameters for nilearn.mass_univariate.permuted_ols()
         model_intercept: bool = True
-        n_perm: int = 100  # TODO: Use 10000
+        n_perm: int = 10000
         two_sided_test: bool = True
         random_state = None
         n_jobs: int = -1  # All available
@@ -1054,6 +1104,10 @@ if True:
         confounding_table_input = confounding_table_input.drop(
             columns=[col for col in confounding_table_input.columns if col.startswith(var_prefix)]
         )
+else:
+    # TODO: Do we need to set var_name to something meaningful in this case too?
+    var_name = ""
+
 
 start = time.time()
 output_voxels_by_subtype: dict[str, dict[str, np.ndarray]] = func(
@@ -1111,6 +1165,8 @@ if func == use_nilearn:
     output_images_by_subtype: dict[str, np.ndarray] = {}
     white_matter_indices: np.ndarray = (white_matter_mask_input.get_fdata() > 0).reshape(-1)
     print("## use_nilearn output")
+    # Set gamma to, e.g., 0.1 or 0.01 to change the contrast of the image.  Lower values of gamma brighten the darkest
+    # voxels the most.
     gamma = 0.01
     if gamma != 1.0:
         print(f"Using contrast adjustment with {gamma = }")
@@ -1146,9 +1202,9 @@ if func == use_nilearn:
         # Show the shape of the image
         print(f"output_images_for_subtype[{subtype_key!r}].shape = {output_images_for_subtype.shape}")
         # Show the minimum voxel intensity
-        print(f"np.amin(output_images_for_subtype[{subtype_key!r}]) = {np.amin(output_images_for_subtype)}")
+        print(f"np.min(output_images_for_subtype[{subtype_key!r}]) = {np.min(output_images_for_subtype)}")
         # Show the maximum voxel intensity
-        print(f"np.amax(output_images_for_subtype[{subtype_key!r}]) = {np.amax(output_images_for_subtype)}")
+        print(f"np.max(output_images_for_subtype[{subtype_key!r}]) = {np.max(output_images_for_subtype)}")
 
         # Find interestig slices to plot.  For each tested variable (i.e. each KSADS variable), we'll have one X slice,
         # one Y slice, and one Z slice.
@@ -1161,25 +1217,50 @@ if func == use_nilearn:
         z_margins = output_images_for_subtype.sum(axis=(1, 2))
         minZ, bestZ, maxZ = find_good_slice(z_margins)
 
-        # print()
-        # print(f"{minX = }")
-        # print(f"{bestX = }")
-        # print(f"{maxX = }")
-        # print(f"{minY = }")
-        # print(f"{bestY = }")
-        # print(f"{maxY = }")
-        # print(f"{minZ = }")
-        # print(f"{bestZ = }")
-        # print(f"{maxZ = }")
+        if subtype_key == "fa":
+            # Load in reference segmentation
+            segmentation: dict[str, Any] = slicerio.read_segmentation(fa_segmentation_filename)
+            fa_labelmap: np.ndarray = segmentation["voxels"].astype(np.int32)
+            segment_name_lookup: dict[int, str] = {-1: "Background"} | {
+                d["labelValue"]: d["name"] for d in segmentation["segments"]
+            }
+            del segmentation
 
         print()
-        # Set gamma to, e.g., 0.1 or 0.01 to change the contrast of the image.  Lower values of gamma brighten the
-        # darkest voxels the most.
         for i in range(number_tested_vars):
             if subtype_key == "fa" and tested_keys_input[i] == var_name:
                 dipy.io.image.save_nifti(
-                    an_output_file_name, output_images_for_subtype[i, :, :, :], white_matter_mask_affine
+                    an_output_filename, output_images_for_subtype[i, :, :, :], white_matter_mask_affine
                 )
+
+            if subtype_key == "fa":
+                maxima: list[tuple[int, int, int]] = find_local_maxima(output_images_for_subtype[i, :, :, :], 0.1, 3)
+                shapex, shapey, shapez = output_images_for_subtype[i, :, :, :].shape
+                print("#### Maxima information")
+                print(f"{subtype_key!r} image for {tested_keys_input[i]!r}")
+                for x, y, z in maxima:
+                    region_index = fa_labelmap[x, y, z]
+                    where = "in"
+                    if region_index == -1:
+                        # Instead of background, take the most common nearby brain region
+                        for distance in range(1, 4):
+                            neighborhood = fa_labelmap[
+                                max(0, x - distance) : min(shapex, x + distance + 1),
+                                max(0, y - distance) : min(shapey, y + distance + 1),
+                                max(0, z - distance) : min(shapez, z + distance + 1),
+                            ].reshape(-1)
+                            neighborhood = neighborhood[neighborhood != -1].astype(int)
+                            if neighborhood.size:
+                                values, counts = np.unique(neighborhood, return_counts=True)
+                                # Ties go to the lower integer; oh well
+                                region_index = values[np.argmax(counts)]
+                                where = "near"
+                                break
+                    print(
+                        f"Found local maximum -log_10 p(t-stat)={output_images_for_subtype[i, x, y, z]}"
+                        f" at ({x}, {y}, {z} = {shapez - 1}-{shapez - 1 - z})"
+                        f" {where} region {segment_name_lookup[region_index]} ({region_index})"
+                    )
 
             # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
             print(f"{subtype_key!r} image X={bestX[i]} slice for {tested_keys_input[i]!r}")
