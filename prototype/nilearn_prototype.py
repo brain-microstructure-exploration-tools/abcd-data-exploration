@@ -14,6 +14,82 @@
 # ---
 
 # # An example workflow for generating hypotheses with ABCD data
+#
+# ## Overview
+# Big picture, this workbook shows how to use [Adolescent Brain Cognitive Development Study (ABCD
+# Study®)](https://abcdstudy.org/) subject data and metadata about their images to predict voxel values in the images.
+# The goal is generating hypotheses about which voxels are associated with those data.
+#
+# The input data are divided into three categories:
+# * **tested variables:** these are variables that we are seeking significant voxels for.  These are typically
+#   [KSADS](https://en.wikipedia.org/wiki/Kiddie_Schedule_for_Affective_Disorders_and_Schizophrenia) data from
+#   `mental-health/mh_y_ksads_ss`.  However for illustrative purposes in this notebook, we also test for subject's
+#   gender.
+# * **confounding variables:** these are variables that may affect voxel values and hide the significant signal that we
+#   are hoping to detect for the tested variables.  These can be variables like age
+#   (`abcd-general/abcd_y_lt/interview_age`), hospital (`abcd-general/abcd_y_lt/site_id_l`), gender
+#   (`gender-identity-sexual-health/gish_p_gi/demo_gender_id_v2`), or family (`abcd-general/abcd_y_lt/rel_family_id`).
+#   * These variables can be used for both intercept and slope statistical random effects in a [multilevel
+#     model](https://en.wikipedia.org/wiki/Multilevel_model).
+# * **voxel data:** the intensity associated with each voxel of each registered image.  The data set includes both "fa"
+#   and "md" images, and a separate analysis is run for each.
+#
+# The output includes a computed statistical significance for each voxel for each tested variable.  This is output as
+# one image per tested variable.  Each of these images can be visualized in software such as [3D
+# Slicer](https://download.slicer.org/), alongside a registered segmentation image that labels brain regions.  Those
+# voxels with a high statistical significance are also output by this notebook in text form.  Furthermore, the X-slice,
+# Y-slice, and Z-slice with the most combined statistical significance are shown.
+#
+# ## Individual steps
+# In addition to showing a high-level approach to hypothesis generation, this is functioning code that also provides
+# many low-level details.
+#
+# ### Installing dependencies
+# This is Python code that relies on some well-established, useful packages available for Python.  This workbook shows
+# how to get those packages.
+#
+# ### Functions
+# Various steps are shown in the functions that are defined below.  Ultimately, these functions are invoked towards the
+# end of this notebook.
+# * **get_list_of_image_files:** demonstrates how to select only voxel-data files from a given directory.
+# * **parse_image_filenames:** demonstrates how to extract image metadata from each image file's name and load it into a
+#   dataframe.
+# * **get_data_from_image_files:** demonstrates how to read voxel data from each image file.
+# * **get_white_matter_mask_as_numpy:** ** demonstrates how to create a mask that indicates which voxels are white
+#   matter.
+# * **csv_file_to_dataframe:** demonstrates how to read a [CSV](https://en.wikipedia.org/wiki/Comma-separated_values)
+#   file into a Python [pandas](https://pandas.pydata.org/) dataframe.
+# * **select_rows_of_dataframe:** is a deprecated function replaced by pandas' `isin` functionality.
+# * **clean_ksads_data_frame:** demonstrates how missing values in KSADS data can be handled.
+# * **ksads_filename_to_dataframe:** demonstrates how to load and pre-process the KSADS data.
+# * **data_frame_value_counts:** demonstrates how to do a census of answers separately for each column of KSADS data, as
+#   part of the process of picking which KSADS variables are likely interesting.
+# * **entropy_of_column_counts:** demonstrates how to compute the entropy/information of one KSADS variable from its
+#   census of answers, as part of the process of picking which KSADS variables are likely interesting.
+# * **ksads_keys_only:** demonstrates how to filter out non-KSADS columns from a pandas dataframe.
+# * **entropy_of_all_columns:** demonstrates how to apply entropy_of_column_counts to all KSADS variables, one at a
+#   time.
+# * **find_interesting_entropies:** demonstrates how to call data_frame_value_counts and entropy_of_all_columns to
+#   calculate and support the KSADS variables' entropy/information values.
+# * **find_interesting_ksads:** demonstrates how a user can select KSADS variables for further analysis based upon how
+#   much entropy/information is in the dataset for each KSADS variable.
+# * **large_enough_category_size:** demonstrates how to remove un- or barely informative confounding variables.
+# * **process_confounding_var:** demonstrates how to collect and do most of the processing for each confounding
+#   variable.
+# * **process_longitudinal_config:** demonstrates how confounding variables can be processed as intercept or slope
+#   random effects.
+# * **make_dataframe_for_confounding_vars:** demonstrates how to call subroutines to retrieve, process, and combine all
+#   confounding variables into a single dataframe.
+# * **merge_confounding_table:** demonstrates how to combine confounding variables data with associated image metadata.
+# * **find_good_slice:** demonstrates how to find an interesting X-, Y-, or Z-slice in the output data.
+# * **find_local_maxima:** demonstrates how to find voxels that are local maxima in terms of statistical significance.
+# * **use_numpy:** demonstrates how to process all the input using hand-coded numpy routines.  This implementation was
+#   present before we switched to nilearn's implementation, and is not as well debugged.
+# * **use_nilearn:** demonstrates how to read and pre-process all the input, use the `nilearn` library for processing,
+#   and post-process the output.
+#
+# ### Running
+# The top-level routine that is invoked is `use_nilearn`.
 
 # ## Installing dependent Python packages
 # One way to do this is with a virtual python environment installed so that it is accessible to Jupyter lab.  This needs
@@ -21,8 +97,9 @@
 # ```bash
 # python -m venv ~/abcd311
 # source ~/abcd311/bin/activate
-# pip install ipykernel
+# pip install -U ipykernel jupyterlab jupytext pip setuptools wheel
 # python -m ipykernel install --user --name abcd311
+# # cd abcd-data-exploration
 # pip install -r requirements.txt
 # ```
 # Then, once Jupyter is open with this lab notebook, "Change Kernel..." to be "abcd311".
@@ -32,10 +109,11 @@
 # ```bash
 # jupytext --to ipynb nilearn_prototype.py
 # ```
-# to create `nilearn_prototype.ipynb`, which can be run in Jupyter.
+# to create `nilearn_prototype.ipynb`, which can be run with something like `jupyter lab`.
 
 # ## Import dependent Python packages
 
+# +
 # Import from Python packages
 from __future__ import annotations
 
@@ -53,7 +131,6 @@ import matplotlib.pyplot
 import nibabel
 import nibabel.nifti1
 import nilearn
-import nilearn.glm
 import nilearn.maskers
 import nilearn.masking
 import nilearn.mass_univariate
@@ -62,9 +139,11 @@ import pandas as pd
 import scipy.signal
 import slicerio
 
-# ## Set global variables
+# -
 
-# +
+# ## Set global variables
+# ### Inputs
+
 # Set global parameters to match your environment.  Ultimately these will be member variables of a class.
 gor_image_directory: str = "/data2/ABCD/gor-images"
 # TODO: We may need separate compute_white_matter_mask_from_file files for "fa" and "md"
@@ -72,16 +151,23 @@ compute_white_matter_mask_from_file: str = os.path.join(gor_image_directory, "go
 coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory: str = os.path.join(tabular_data_directory, "core")
-an_output_filename: str = "/home/local/KHQ/lee.newberg/demo_gender_id_v2==1.0.nii.gz"
 fa_segmentation_filename: str = (
     "/home/local/KHQ/lee.newberg/git/brain-microstructure-exploration-tools/abcd-data-exploration/prototype/"
     "segmentation_labelmap_mrtrix.seg.nrrd"
 )
 
-# Useful class static const members
+# ### Outputs
 
-# Images are distinguished from each other by their subjects and timing.  (Also distinguished as "md" vs. "fa" type,
-# though not relevant here.)
+# Set global parameters to match your environment.  Ultimately these will be member variables of a class.
+an_output_filename: str = "/home/local/KHQ/lee.newberg/demo_gender_id_v2==1.0.nii.gz"
+
+# ### Internal configuration
+
+# +
+# Ultimately these will be static const members a class
+
+# Images are uniquely identified / distinguished from each other by their subjects and timing.
+# (They are also distinguished as "md" vs. "fa" image_subtype, though not relevant here.)
 join_keys_global: list[str] = ["src_subject_id", "eventname"]
 # Defaults for confounding_vars_config
 LongitudinalDefault: list[str] = ["intercept"]
@@ -1243,7 +1329,7 @@ if func == use_nilearn:
                     where = "in"
                     if region_index == -1:
                         # Instead of background, take the most common nearby brain region
-                        for distance in range(1, 4):
+                        for distance in range(1, 6):
                             neighborhood = fa_labelmap[
                                 max(0, x - distance) : min(shapex, x + distance + 1),
                                 max(0, y - distance) : min(shapey, y + distance + 1),
@@ -1262,30 +1348,36 @@ if func == use_nilearn:
                         f" {where} region {segment_name_lookup[region_index]} ({region_index})"
                     )
 
-            # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z slice.
-            print(f"{subtype_key!r} image X={bestX[i]} slice for {tested_keys_input[i]!r}")
-            # slice_2d = output_images_for_subtype[i, bestX[i], minY[i] : maxY[i], minZ[i] : maxZ[i]]
-            slice_2d = output_images_for_subtype[i, bestX[i], :, :]
-            slice_2d = np.power(slice_2d, gamma)  # Gamma correction
-            matplotlib.pyplot.imshow(slice_2d, cmap="gray")
-            # matplotlib.pyplot.colorbar()
-            matplotlib.pyplot.show()
+            import IPython
 
-            print(f"{subtype_key!r} image Y={bestY[i]} slice for {tested_keys_input[i]!r}")
-            # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], bestY[i], minZ[i] : maxZ[i]]
-            slice_2d = output_images_for_subtype[i, :, bestY[i], :]
-            slice_2d = np.power(slice_2d, gamma)  # Gamma correction
-            matplotlib.pyplot.imshow(slice_2d, cmap="gray")
-            # matplotlib.pyplot.colorbar()
-            matplotlib.pyplot.show()
+            shell = IPython.get_ipython()
+            if shell and shell.__class__.__name__ == "ZMQInteractiveShell":
+                # Run this code if within Jupyter
+                # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z
+                # slice.
+                print(f"{subtype_key!r} image X={bestX[i]} slice for {tested_keys_input[i]!r}")
+                # slice_2d = output_images_for_subtype[i, bestX[i], minY[i] : maxY[i], minZ[i] : maxZ[i]]
+                slice_2d = output_images_for_subtype[i, bestX[i], :, :]
+                slice_2d = np.power(slice_2d, gamma)  # Gamma correction
+                matplotlib.pyplot.imshow(slice_2d, cmap="gray")
+                # matplotlib.pyplot.colorbar()
+                matplotlib.pyplot.show()
 
-            print(f"{subtype_key!r} image Z={bestZ[i]} slice for {tested_keys_input[i]!r}")
-            # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], minY[i] : maxY[i], bestZ[i]]
-            slice_2d = output_images_for_subtype[i, :, :, bestZ[i]]
-            slice_2d = np.power(slice_2d, gamma)  # Gamma correction
-            matplotlib.pyplot.imshow(slice_2d, cmap="gray")
-            # matplotlib.pyplot.colorbar()
-            matplotlib.pyplot.show()
+                print(f"{subtype_key!r} image Y={bestY[i]} slice for {tested_keys_input[i]!r}")
+                # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], bestY[i], minZ[i] : maxZ[i]]
+                slice_2d = output_images_for_subtype[i, :, bestY[i], :]
+                slice_2d = np.power(slice_2d, gamma)  # Gamma correction
+                matplotlib.pyplot.imshow(slice_2d, cmap="gray")
+                # matplotlib.pyplot.colorbar()
+                matplotlib.pyplot.show()
+
+                print(f"{subtype_key!r} image Z={bestZ[i]} slice for {tested_keys_input[i]!r}")
+                # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], minY[i] : maxY[i], bestZ[i]]
+                slice_2d = output_images_for_subtype[i, :, :, bestZ[i]]
+                slice_2d = np.power(slice_2d, gamma)  # Gamma correction
+                matplotlib.pyplot.imshow(slice_2d, cmap="gray")
+                # matplotlib.pyplot.colorbar()
+                matplotlib.pyplot.show()
 
     # print(output_images_by_subtype)
 else:
