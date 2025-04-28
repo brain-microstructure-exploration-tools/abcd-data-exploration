@@ -16,6 +16,7 @@
 # # An example workflow for generating hypotheses with ABCD data
 #
 # ## Overview
+# ### Input & Output
 # Big picture, this workbook shows how to use [Adolescent Brain Cognitive Development Study (ABCD
 # Study®)](https://abcdstudy.org/) subject data and metadata about their images to predict voxel values in the images.
 # The goal is generating hypotheses about which voxels are associated with those data.
@@ -34,11 +35,47 @@
 # * **voxel data:** the intensity associated with each voxel of each registered image.  The data set includes both "fa"
 #   and "md" images, and a separate analysis is run for each.
 #
-# The output includes a computed statistical significance for each voxel for each tested variable.  This is output as
-# one image per tested variable.  Each of these images can be visualized in software such as [3D
-# Slicer](https://download.slicer.org/), alongside a registered segmentation image that labels brain regions.  Those
-# voxels with a high statistical significance are also output by this notebook in text form.  Furthermore, the X-slice,
-# Y-slice, and Z-slice with the most combined statistical significance are shown.
+# The output includes:
+# * **a computed statistical significance for each voxel for each tested variable:** This is output as one image per
+#   tested variable.
+# Each of these images can be visualized in software such as [3D Slicer](https://download.slicer.org/), alongside a
+# registered segmentation image that labels brain regions.  Those voxels with a high statistical significance are also
+# output by this notebook in text form.  Furthermore, the X-slice, Y-slice, and Z-slice with the most combined
+# statistical significance are shown.
+#
+# ### Methods
+# Mathematically speaking, for each tested variable separately, we process each voxel separately.  We use a [multlevel
+# model](https://en.wikipedia.org/wiki/Multilevel_model) to predict the voxel's intensity as a function of the tested
+# variable and the confounding variables.  This is a regression model with a non-zero constant term permitted.  When a
+# confounding variable is an ordered variable, it is used directly.  If a confounding variable is an unordered variable,
+# (such as a site id or other category indicator), it is represented in [one-hot](https://en.wikipedia.org/wiki/One-hot)
+# notation; with a separate [indicator term](https://en.wikipedia.org/wiki/Indicator_function) for all categories but
+# one.  When a confounding variable is labeled as "intercept" these values are used directly as just described.  When
+# one confounding variable is labeled as "time" each confounding variable that is labeled as "slope" adds a term to the
+# regression that is the product of the time variable and the "slope" variable.  (A given confounding variable can be
+# labeled as more than one of "time", "intercept", and "slope", though only one confounding variable can be labeled as
+# "time".)  Together these intercept and slope variables are often called [random
+# effects](https://en.wikipedia.org/wiki/Random_effects_model).
+#
+# In equations:
+# $$v_i = \sum_c \beta_c D_{ci} + \epsilon_i$$
+# where
+# * $v_i$ is the intensity of the voxel in image $i$
+# * $c$ indexes the independent variables of the regression, which are the form of any of:
+#   * an ordered confounding variable
+#   * a category of an unordered confounding variable
+#   * one of the above two possibilities multiplied by a time factor (so as to make a random effects slope)
+#   * the tested variable
+#   * a constant term
+# * $\beta_c$ is the regression coefficient for term $c$, which we are solving for
+# * $D_{ci}$ is the input-data value of the $c$ term for image $i$.
+# * $\epsilon_i$ is the error term for image $i$ that we are attempting to minimize
+#
+# The regression is solved and the return value is the _negative_ of
+# $\log_{10}(\operatorname{pvalue}(\operatorname{tstatistic}(\beta_t)))$, where $\beta_t$ is the coefficient for the
+# tested variable and the t-statistic is quantifying the belief that $\beta_t \ne 0$.  Furthermore, nilearn adjusts for
+# multiple testing.  A value of $2.0$ indicates a p-value of 1%, a value of $1.3$ indicates a p-value of 5%, a value of
+# $1.0$ indicates a p-value of 10%, and so on.
 #
 # ## Individual steps
 # In addition to showing a high-level approach to hypothesis generation, this is functioning code that also provides
@@ -61,7 +98,7 @@
 #   file into a Python [pandas](https://pandas.pydata.org/) dataframe.
 # * **select_rows_of_dataframe:** is a deprecated function replaced by pandas' `isin` functionality.
 # * **clean_ksads_data_frame:** demonstrates how missing values in KSADS data can be handled.
-# * **ksads_filename_to_dataframe:** demonstrates how to load and pre-process the KSADS data.
+# * **ksads_filename_to_dataframe:** demonstrates how to load and preprocess the KSADS data.
 # * **data_frame_value_counts:** demonstrates how to do a census of answers separately for each column of KSADS data, as
 #   part of the process of picking which KSADS variables are likely interesting.
 # * **entropy_of_column_counts:** demonstrates how to compute the entropy/information of one KSADS variable from its
@@ -85,8 +122,8 @@
 # * **find_local_maxima:** demonstrates how to find voxels that are local maxima in terms of statistical significance.
 # * **use_numpy:** demonstrates how to process all the input using hand-coded numpy routines.  This implementation was
 #   present before we switched to nilearn's implementation, and is not as well debugged.
-# * **use_nilearn:** demonstrates how to read and pre-process all the input, use the `nilearn` library for processing,
-#   and post-process the output.
+# * **use_nilearn:** demonstrates how to read and preprocess all the input, use the `nilearn` library for processing,
+#   and postprocess the output.
 #
 # ### Running
 # The top-level routine that is invoked is `use_nilearn`.
@@ -176,6 +213,7 @@ ConvertDefault: dict[Any, Any] = {}
 # TODO: Make sure that nilearn.masking.compute_brain_mask() is using `threshold` the way we think it does
 mask_threshold_global: float = 0.70
 min_category_size_global: int = 5
+background_index: int = 0
 # -
 
 # ## Define functions for various steps of the workflow
@@ -1307,9 +1345,7 @@ if func == use_nilearn:
             # Load in reference segmentation
             segmentation: dict[str, Any] = slicerio.read_segmentation(fa_segmentation_filename)
             fa_labelmap: np.ndarray = segmentation["voxels"].astype(np.int32)
-            segment_name_lookup: dict[int, str] = {-1: "Background"} | {
-                d["labelValue"]: d["name"] for d in segmentation["segments"]
-            }
+            segment_name_lookup: dict[int, str] = {d["labelValue"]: d["name"] for d in segmentation["segments"]}
             del segmentation
 
         print()
@@ -1327,15 +1363,16 @@ if func == use_nilearn:
                 for x, y, z in maxima:
                     region_index = fa_labelmap[x, y, z]
                     where = "in"
-                    if region_index == -1:
+                    if region_index == background_index:
                         # Instead of background, take the most common nearby brain region
+                        # TODO: Should we do this differently?
                         for distance in range(1, 6):
                             neighborhood = fa_labelmap[
                                 max(0, x - distance) : min(shapex, x + distance + 1),
                                 max(0, y - distance) : min(shapey, y + distance + 1),
                                 max(0, z - distance) : min(shapez, z + distance + 1),
                             ].reshape(-1)
-                            neighborhood = neighborhood[neighborhood != -1].astype(int)
+                            neighborhood = neighborhood[neighborhood != background_index].astype(int)
                             if neighborhood.size:
                                 values, counts = np.unique(neighborhood, return_counts=True)
                                 # Ties go to the lower integer; oh well
