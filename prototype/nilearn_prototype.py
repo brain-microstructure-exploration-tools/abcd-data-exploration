@@ -16,11 +16,11 @@
 # # An example workflow for generating hypotheses with ABCD data
 #
 # ## Overview
-# ### Input & Output
 # Big picture, this workbook shows how to use [Adolescent Brain Cognitive Development Study (ABCD
 # Study®)](https://abcdstudy.org/) subject data and metadata about their images to predict voxel values in the images.
 # The goal is generating hypotheses about which voxels are associated with those data.
 #
+# ### Input & Output
 # The input data are divided into three categories:
 # * **tested variables:** these are variables that we are seeking significant voxels for.  These are typically
 #   [KSADS](https://en.wikipedia.org/wiki/Kiddie_Schedule_for_Affective_Disorders_and_Schizophrenia) data from
@@ -69,7 +69,7 @@
 #   * a constant term
 # * $\beta_c$ is the regression coefficient for term $c$, which we are solving for
 # * $D_{ci}$ is the input-data value of the $c$ term for image $i$.
-# * $\epsilon_i$ is the error term for image $i$ that we are attempting to minimize
+# * $\epsilon_i$ is the error term for image $i$.  The regression minimizes the sum of squares of these values.
 #
 # The regression is solved and the return value is the _negative_ of
 # $\log_{10}(\operatorname{pvalue}(\operatorname{tstatistic}(\beta_t)))$, where $\beta_t$ is the coefficient for the
