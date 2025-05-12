@@ -91,6 +91,7 @@ for source_type in source_types:
     print("  Writing output files", flush=True)
     source_img: dict[str, Any] = {**mean_arrays_of_segments[0][1]}
     source_img["voxels"] = source_img_voxels
+    source_img["segments"] = segment_descriptions
     argmax_img: dict[str, Any] = {**mean_arrays_of_segments[0][1]}
     argmax_img["voxels"] = argmax_claim
     argmax_img["segments"] = segment_descriptions
