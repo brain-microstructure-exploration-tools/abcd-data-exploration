@@ -71,8 +71,8 @@
 # * $D_{ci}$ is the input-data value of the $c$ term for image $i$.
 # * $\epsilon_i$ is the error term for image $i$.  The regression minimizes the sum of squares of these values.
 #
-# The regression is solved and the return value is the _negative_ of
-# $\log_{10}(\operatorname{pvalue}(\operatorname{tstatistic}(\beta_t)))$, where $\beta_t$ is the coefficient for the
+# The regression is solved and the return value is
+# $\log_{10}(1 / \operatorname{pvalue}(\operatorname{tstatistic}(\beta_t)))$, where $\beta_t$ is the coefficient for the
 # tested variable and the t-statistic is quantifying the belief that $\beta_t \ne 0$.  Furthermore, nilearn adjusts for
 # multiple testing.  A value of $2.0$ indicates a p-value of 1%, a value of $1.3$ indicates a p-value of 5%, a value of
 # $1.0$ indicates a p-value of 10%, and so on.
@@ -188,10 +188,10 @@ compute_white_matter_mask_from_file: str = os.path.join(gor_image_directory, "go
 coregistered_images_directory: str = os.path.join(gor_image_directory, "coregistered-images")
 tabular_data_directory: str = "/data2/ABCD/abcd-5.0-tabular-data-extracted"
 core_directory: str = os.path.join(tabular_data_directory, "core")
-fa_segmentation_filename: str = (
-    "/home/local/KHQ/lee.newberg/git/brain-microstructure-exploration-tools/abcd-data-exploration/prototype/"
-    "segmentation_labelmap_mrtrix.seg.nrrd"
-)
+# fa_seg_ files are originally from /data/lee-data/abcd/registration-experiments/2024-01
+fa_seg_directory: str = "/home/local/KHQ/lee.newberg/git/brain-microstructure-exploration-tools/abcd-data-exploration"
+fa_partition_filename: str = os.path.join(fa_seg_directory, "prototype/segmentation_labelmap_mrtrix.seg.nrrd")
+fa_cloud_filename: str = os.path.join(fa_seg_directory, "prototype/segmentation_data_mrtrix.seg.nrrd")
 
 # ### Outputs
 
@@ -1000,6 +1000,62 @@ def use_numpy(
     return all_subtypes
 
 
+# +
+def show_maximum_using_partition(
+    xyz: tuple[int, int, int],
+    log10_pvalue: np.ndarray,
+    fa_partition_voxels: np.ndarray,
+    fa_partition_lookup: dict[int, str],
+):
+    x, y, z = xyz
+    shapex, shapey, shapez = log10_pvalue.shape
+    region_index = fa_partition_voxels[x, y, z]
+    where = "in"
+    if region_index == background_index:
+        # Instead of background, take the most common nearby brain region
+        for distance in range(1, 4):
+            neighborhood = fa_partition_voxels[
+                max(0, x - distance) : min(shapex, x + distance + 1),
+                max(0, y - distance) : min(shapey, y + distance + 1),
+                max(0, z - distance) : min(shapez, z + distance + 1),
+            ].reshape(-1)
+            neighborhood = neighborhood[neighborhood != background_index].astype(int)
+            if neighborhood.size:
+                values, counts = np.unique(neighborhood, return_counts=True)
+                # Ties go to the lower integer; oh well
+                region_index = values[np.argmax(counts)]
+                where = "near"
+                break
+    print(
+        f"Found local maximum -log_10 p(t-stat)={round(1000.0 * log10_pvalue[x, y, z]) / 1000.0}"
+        f" at ({x}, {y}, {z} = {shapez - 1}-{shapez - 1 - z})"
+        f" {where} region {fa_partition_lookup[region_index]} ({region_index})"
+    )
+
+
+def show_maximum_using_cloud(
+    xyz: tuple[int, int, int],
+    log10_pvalue: np.ndarray,
+    fa_cloud_voxels: np.ndarray,
+    fa_cloud_lookup: dict[int, str],
+    threshold: float = 0.25,
+):
+    x, y, z = xyz
+    shapex, shapey, shapez = log10_pvalue.shape
+    cloud_here = fa_cloud_voxels[:, x, y, z]
+    argsort: np.ndarray = np.argsort(cloud_here)[::-1]
+    print(
+        f"Found local maximum -log_10 p(t-stat)={round(1000.0 * log10_pvalue[x, y, z]) / 1000.0}"
+        f" at ({x}, {y}, {z} = {shapez - 1}-{shapez - 1 - z} in regions:"
+    )
+    # Show those that exceed threshold; showing at least 2 regions
+    for cloud_index in [argsort[i] for i in range(len(argsort)) if i < 2 or cloud_here[argsort[i]] >= threshold]:
+        region = cloud_index + background_index + 1
+        print(
+            f"    {fa_cloud_lookup[region]} ({region}) confidence = {round(100000.0 * cloud_here[cloud_index]) / 1000}%"
+        )
+
+
 # How we might process the inputs using nilearn.mass_univariate.permuted_ols()
 def use_nilearn(
     confounding_keys: list[str],
@@ -1115,6 +1171,8 @@ def use_nilearn(
         all_subtypes[image_subtype] = response
     return all_subtypes
 
+
+# -
 
 # ## Define or load input data
 
@@ -1330,7 +1388,7 @@ if func == use_nilearn:
         # Show the maximum voxel intensity
         print(f"np.max(output_images_for_subtype[{subtype_key!r}]) = {np.max(output_images_for_subtype)}")
 
-        # Find interestig slices to plot.  For each tested variable (i.e. each KSADS variable), we'll have one X slice,
+        # Find interestig slices to plot.  For each tested variable (i.e., each KSADS variable), we'll have one X slice,
         # one Y slice, and one Z slice.
         x_margins = output_images_for_subtype.sum(axis=(2, 3))
         minX, bestX, maxX = find_good_slice(x_margins)
@@ -1341,80 +1399,77 @@ if func == use_nilearn:
         z_margins = output_images_for_subtype.sum(axis=(1, 2))
         minZ, bestZ, maxZ = find_good_slice(z_margins)
 
-        if subtype_key == "fa":
-            # Load in reference segmentation
-            segmentation: dict[str, Any] = slicerio.read_segmentation(fa_segmentation_filename)
-            fa_labelmap: np.ndarray = segmentation["voxels"].astype(np.int32)
-            segment_name_lookup: dict[int, str] = {d["labelValue"]: d["name"] for d in segmentation["segments"]}
-            del segmentation
+        faYes: bool = subtype_key == "fa"
+        if faYes:
+            # Load in reference segmentation (partition)
+            fa_partition_data: dict[str, Any] = slicerio.read_segmentation(fa_partition_filename)
+            fa_partition_voxels: np.ndarray = fa_partition_data["voxels"].astype(np.int32)
+            fa_partition_lookup: dict[int, str] = {d["labelValue"]: d["name"] for d in fa_partition_data["segments"]}
+            del fa_partition_data
+            # Load in reference segmentation (cloud)
+            fa_cloud_data: dict[str, Any] = slicerio.read_segmentation(fa_cloud_filename)
+            fa_cloud_voxels: np.ndarray = fa_cloud_data["voxels"].astype(np.float64)
+            fa_cloud_lookup: dict[int, str] = {d["labelValue"]: d["name"] for d in fa_cloud_data["segments"]}
+            del fa_cloud_data
+            # Load in brain for output background
+            brain_data: dict[str, Any] = slicerio.read_segmentation(compute_white_matter_mask_from_file)
+            brain_voxels: np.ndarray = brain_data["voxels"].astype(np.float64)
+            brain_voxels = brain_voxels / np.max(brain_voxels)  # max is now 1, to scale to -log10(10%)==1
+            # Change brain_voxels to gray in RGB.  Matplotlib expects color to be the last dimension
+            brain_voxels = np.stack((brain_voxels,) * 3, axis=-1)
+            del brain_data
 
         print()
         for i in range(number_tested_vars):
-            if subtype_key == "fa" and tested_keys_input[i] == var_name:
-                dipy.io.image.save_nifti(
-                    an_output_filename, output_images_for_subtype[i, :, :, :], white_matter_mask_affine
-                )
+            output_image: np.ndarray = output_images_for_subtype[i, :, :, :]
+            if faYes and tested_keys_input[i] == var_name:
+                dipy.io.image.save_nifti(an_output_filename, output_image, white_matter_mask_affine)
 
-            if subtype_key == "fa":
-                maxima: list[tuple[int, int, int]] = find_local_maxima(output_images_for_subtype[i, :, :, :], 0.1, 3)
-                shapex, shapey, shapez = output_images_for_subtype[i, :, :, :].shape
+            if faYes:
+                maxima: list[tuple[int, int, int]] = find_local_maxima(output_image, 0.1, 3)
                 print("#### Maxima information")
                 print(f"{subtype_key!r} image for {tested_keys_input[i]!r}")
-                for x, y, z in maxima:
-                    region_index = fa_labelmap[x, y, z]
-                    where = "in"
-                    if region_index == background_index:
-                        # Instead of background, take the most common nearby brain region
-                        # TODO: Should we do this differently?
-                        for distance in range(1, 6):
-                            neighborhood = fa_labelmap[
-                                max(0, x - distance) : min(shapex, x + distance + 1),
-                                max(0, y - distance) : min(shapey, y + distance + 1),
-                                max(0, z - distance) : min(shapez, z + distance + 1),
-                            ].reshape(-1)
-                            neighborhood = neighborhood[neighborhood != background_index].astype(int)
-                            if neighborhood.size:
-                                values, counts = np.unique(neighborhood, return_counts=True)
-                                # Ties go to the lower integer; oh well
-                                region_index = values[np.argmax(counts)]
-                                where = "near"
-                                break
-                    print(
-                        f"Found local maximum -log_10 p(t-stat)={output_images_for_subtype[i, x, y, z]}"
-                        f" at ({x}, {y}, {z} = {shapez - 1}-{shapez - 1 - z})"
-                        f" {where} region {segment_name_lookup[region_index]} ({region_index})"
-                    )
-
+                for xyz in maxima:
+                    show_maximum_using_partition(xyz, output_image, fa_partition_voxels, fa_partition_lookup)
+                for xyz in maxima:
+                    show_maximum_using_cloud(xyz, output_image, fa_cloud_voxels, fa_cloud_lookup, threshold=0.1)
             import IPython
 
             shell = IPython.get_ipython()
             if shell and shell.__class__.__name__ == "ZMQInteractiveShell":
+                shapex, shapey, shapez = output_image.shape
                 # Run this code if within Jupyter
-                # For each tested variable (i.e. each KSADS variable), we'll have one X slice, one Y slice, and one Z
+                # For each tested variable (i.e., each KSADS variable), we'll have one X slice, one Y slice, and one Z
                 # slice.
                 print(f"{subtype_key!r} image X={bestX[i]} slice for {tested_keys_input[i]!r}")
-                # slice_2d = output_images_for_subtype[i, bestX[i], minY[i] : maxY[i], minZ[i] : maxZ[i]]
-                slice_2d = output_images_for_subtype[i, bestX[i], :, :]
-                slice_2d = np.power(slice_2d, gamma)  # Gamma correction
-                matplotlib.pyplot.imshow(slice_2d, cmap="gray")
+                slice_2d = brain_voxels[bestX[i], :, :, :].copy() if faYes else np.zeros((shapey, shapez, 3))
+                # Add gamma corrected output to the green channel
+                slice_2d[:, :, 1] += np.power(output_image[bestX[i], :, :], gamma)
+                slice_2d = np.clip(slice_2d, 0, 1)
+                matplotlib.pyplot.imshow(slice_2d)
                 # matplotlib.pyplot.colorbar()
                 matplotlib.pyplot.show()
 
                 print(f"{subtype_key!r} image Y={bestY[i]} slice for {tested_keys_input[i]!r}")
-                # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], bestY[i], minZ[i] : maxZ[i]]
-                slice_2d = output_images_for_subtype[i, :, bestY[i], :]
-                slice_2d = np.power(slice_2d, gamma)  # Gamma correction
+                slice_2d = brain_voxels[:, bestY[i], :, :].copy() if faYes else np.zeros((shapex, shapez, 3))
+                # Add gamma corrected output to the green channel
+                slice_2d[:, :, 1] += np.power(output_image[:, bestY[i], :], gamma)
+                slice_2d = np.clip(slice_2d, 0, 1)
                 matplotlib.pyplot.imshow(slice_2d, cmap="gray")
                 # matplotlib.pyplot.colorbar()
                 matplotlib.pyplot.show()
 
                 print(f"{subtype_key!r} image Z={bestZ[i]} slice for {tested_keys_input[i]!r}")
-                # slice_2d = output_images_for_subtype[i, minX[i] : maxX[i], minY[i] : maxY[i], bestZ[i]]
-                slice_2d = output_images_for_subtype[i, :, :, bestZ[i]]
-                slice_2d = np.power(slice_2d, gamma)  # Gamma correction
+                slice_2d = brain_voxels[:, :, bestZ[i], :].copy() if faYes else np.zeros((shapex, shapey, 3))
+                # Add gamma corrected output to the green channel
+                slice_2d[:, :, 1] += np.power(output_image[:, :, bestZ[i]], gamma)
+                slice_2d = np.clip(slice_2d, 0, 1)
                 matplotlib.pyplot.imshow(slice_2d, cmap="gray")
                 # matplotlib.pyplot.colorbar()
                 matplotlib.pyplot.show()
+
+        if faYes:
+            del fa_partition_voxels, fa_partition_lookup, fa_cloud_voxels, fa_cloud_lookup, brain_voxels
 
     # print(output_images_by_subtype)
 else:
