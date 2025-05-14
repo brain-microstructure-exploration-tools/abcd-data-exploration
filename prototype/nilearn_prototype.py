@@ -58,7 +58,7 @@
 # effects](https://en.wikipedia.org/wiki/Random_effects_model).
 #
 # In equations:
-# $$v_i = \sum_c \beta_c D_{ci} + \epsilon_i$$
+# $$v_i = \sum_c D_{ic} \beta_c + \epsilon_i$$
 # where
 # * $v_i$ is the intensity of the voxel in image $i$
 # * $c$ indexes the independent variables of the regression, which are the form of any of:
@@ -68,7 +68,7 @@
 #   * the tested variable
 #   * a constant term
 # * $\beta_c$ is the regression coefficient for term $c$, which we are solving for
-# * $D_{ci}$ is the input-data value of the $c$ term for image $i$.
+# * $D_{ic}$ is the input-data value of the $c$ term for image $i$.
 # * $\epsilon_i$ is the error term for image $i$.  The regression minimizes the sum of squares of these values.
 #
 # The regression is solved and the return value is
@@ -166,6 +166,7 @@ import matplotlib.pyplot
 import nibabel
 import nibabel.nifti1
 import nilearn
+import nilearn.glm
 import nilearn.maskers
 import nilearn.masking
 import nilearn.mass_univariate
@@ -303,7 +304,7 @@ def get_white_matter_mask_as_numpy(
     # analyses.  The mask is flattened to a single dimension because our analysis software indexes voxels this way We
     # determine white matter by looking at the compute_white_matter_mask_from_file for voxels that have an intensity
     # above a threshold.
-    source_data = get_data_from_image_files([compute_white_matter_mask_from_file])[0]
+    source_data: list[Any] = get_data_from_image_files([compute_white_matter_mask_from_file])[0]
     source_voxels: np.ndarray = source_data[1]
     source_affine: np.ndarray = source_data[2]
     white_matter_mask: np.ndarray = (source_voxels >= mask_threshold).reshape(-1)
@@ -417,7 +418,7 @@ def entropy_of_column_counts(column_counts) -> float:
     Here we compute the entropy (information) of one column given its census data from data_frame_value_counts().
     """
     assert all(value >= 0 for value in column_counts.values())
-    total_count = sum(column_counts.values())
+    total_count: int = sum(column_counts.values())
     entropy: float = sum(
         [count / total_count * math.log2(total_count / count) for count in column_counts.values() if count > 0]
     )
@@ -576,7 +577,7 @@ def process_confounding_var(
     if "Type" not in details:
         mesgs.append(f"The 'Type' attribute must be supplied for the fieldname {fieldname!r}.")
     if mesgs:
-        mesg = "\n".join(mesgs)
+        mesg: str = "\n".join(mesgs)
         raise ValueError(mesg)
 
     Fieldname: str = fieldname
@@ -601,7 +602,7 @@ def process_confounding_var(
     if len(Longitudinal) == 0 or not all(element in {"time", "intercept", "slope"} for element in Longitudinal):
         mesgs.append(f"`{details['Longitudinal']!r}` is not a valid Longitudinal value for {fieldname!r}.")
     if mesgs:
-        mesg = "\n".join(mesgs)
+        mesg: str = "\n".join(mesgs)
         raise ValueError(mesg)
 
     # Read the desired data column and join keys from file
@@ -638,9 +639,9 @@ def process_confounding_var(
         if Type == "ordered":
             # We will interpret missing as 0, but add a one-hot column so that it can effectively be any constant.  In
             # particular, it will not be confounded with actual values of 0.
-            new_missing_name = Fieldname + "_missing"
+            new_missing_name: str = Fieldname + "_missing"
             if new_missing_name in df_var.columns:
-                mesg = f"Failed to get unique column name for {new_missing_name!r}."
+                mesg: str = f"Failed to get unique column name for {new_missing_name!r}."
                 raise ValueError(mesg)
             df_var[new_missing_name] = (df_var[Fieldname] == IsMissing[0]).astype(int)
             # print(f"  #06 {df_var.columns = }", flush=True)
@@ -657,8 +658,8 @@ def process_confounding_var(
     if HandleMissing == "separately":
         # We want to use unused distinct values for each type of "missing".  We add unique values so the pd.get_dummies
         # call creates a one-hot column for each missing value.
-        unused_numeric_value = 1 + max([int(x) for x in df_var[Fieldname] if isinstance(x, (int, float))] + [0])
-        number_needed_values = (df_var[Fieldname] == IsMissing[0]).sum()
+        unused_numeric_value: int = 1 + max([int(x) for x in df_var[Fieldname] if isinstance(x, (int, float))] + [0])
+        number_needed_values: int = (df_var[Fieldname] == IsMissing[0]).sum()
         if Type == "unordered":
             df_var.loc[df_var[Fieldname] == IsMissing[0], Fieldname] = range(
                 unused_numeric_value, unused_numeric_value + number_needed_values
@@ -698,19 +699,19 @@ def process_longitudinal_config(
     # includes "intercept" in its "Longitudinal" list will be passed through unmodified.  The unique fieldname that
     # includes "time" in its "Longitudinal" list will be used in the creation of data columns for those fieldnames that
     # include "slope" in their "Longitudinal" lists.
-    has_time = [
+    has_time: list[str] = [
         fieldname
         for fieldname, details in confounding_vars_config.items()
         for longitudinal in [details.get("Longitudinal", LongitudinalDefault)]
         if "time" in longitudinal
     ]
-    has_intercept = [
+    has_intercept: list[str] = [
         fieldname
         for fieldname, details in confounding_vars_config.items()
         for longitudinal in [details.get("Longitudinal", LongitudinalDefault)]
         if "intercept" in longitudinal
     ]
-    has_slope = [
+    has_slope: list[str] = [
         fieldname
         for fieldname, details in confounding_vars_config.items()
         for longitudinal in [details.get("Longitudinal", LongitudinalDefault)]
@@ -737,7 +738,7 @@ def process_longitudinal_config(
             'because no confounding fields are supplied as "time".'
         )
     if mesgs:
-        mesg = "\n".join(mesgs)
+        mesg: str = "\n".join(mesgs)
         raise ValueError(mesg)
 
     # We return one dataframe for each fieldname in has_intercept.
@@ -831,7 +832,7 @@ def merge_confounding_table(
 
 
 # +
-def find_good_slice(margins):
+def find_good_slice(margins: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     For each ksads variable, we want to show an interesting slice of the 3d-data.
     For example, we choose a slice in the X dimension (i.e., we choose a YZ plane) by designating its x coordinate and
@@ -848,9 +849,9 @@ def find_good_slice(margins):
     This routine works identically for slices in the Y or Z dimensions, so long as margins is supplied by summing out
     the remaining dimensions.
     """
-    min_ = np.argmax(margins > 0.0, axis=-1)
-    best_ = np.argmax(margins, axis=-1)
-    max_ = np.argmax(np.cumsum(margins > 0.0, axis=-1), axis=-1) + 1
+    min_: np.ndarray = np.argmax(margins > 0.0, axis=-1)
+    best_: np.ndarray = np.argmax(margins, axis=-1)
+    max_: np.ndarray = np.argmax(np.cumsum(margins > 0.0, axis=-1), axis=-1) + 1
     return min_, best_, max_
 
 
@@ -904,12 +905,12 @@ def show_maximum_using_partition(
 ):
     x, y, z = xyz
     shapex, shapey, shapez = log10_pvalue.shape
-    region_index = fa_partition_voxels[x, y, z]
-    where = "in"
+    region_index: int = fa_partition_voxels[x, y, z]
+    where: str = "in"
     if region_index == background_index:
         # Instead of background, take the most common nearby brain region
         for distance in range(1, 4):
-            neighborhood = fa_partition_voxels[
+            neighborhood: np.ndarray = fa_partition_voxels[
                 max(0, x - distance) : min(shapex, x + distance + 1),
                 max(0, y - distance) : min(shapey, y + distance + 1),
                 max(0, z - distance) : min(shapez, z + distance + 1),
@@ -937,7 +938,7 @@ def show_maximum_using_cloud(
 ):
     x, y, z = xyz
     shapex, shapey, shapez = log10_pvalue.shape
-    cloud_here = fa_cloud_voxels[:, x, y, z]
+    cloud_here: np.ndarray = fa_cloud_voxels[:, x, y, z]
     argsort: np.ndarray = np.argsort(cloud_here)[::-1]
     print(
         f"Found local maximum -log_10 p(t-stat)={round(1000.0 * log10_pvalue[x, y, z]) / 1000.0}"
@@ -945,7 +946,7 @@ def show_maximum_using_cloud(
     )
     # Show those that exceed threshold; showing at least 2 regions
     for cloud_index in [argsort[i] for i in range(len(argsort)) if i < 2 or cloud_here[argsort[i]] >= threshold]:
-        region = cloud_index + background_index + 1
+        region: int = cloud_index + background_index + 1
         print(
             f"    {fa_cloud_lookup[region]} ({region}) confidence = {round(100000.0 * cloud_here[cloud_index]) / 1000}%"
         )
@@ -960,7 +961,7 @@ def use_nilearn(
     join_keys: list[str],
     min_category_size: int,
     white_matter_mask: nibabel.nifti1.Nifti1Image,
-) -> dict[str, dict[str, np.ndarray]]:
+) -> dict[str, dict[str, Any]]:
     print(f"Using nilearn version {nilearn.__version__}")
     # print(f"{white_matter_mask = }")
     # # confounding_table has columns *counfounding_vars, src_subject_id, eventname, image_subtype, filename
@@ -972,7 +973,7 @@ def use_nilearn(
     # Find "fa" and "md" and any others that are added later
     image_subtypes = list(confounding_table["image_subtype"].unique())
 
-    all_subtypes: dict[str, dict[str, np.ndarray]] = {}
+    all_subtypes: dict[str, dict[str, Any]] = {}
     # For each subtype (e.g., "fa" and "md")
     for image_subtype in image_subtypes:
         print(f"{image_subtype = }")
@@ -1047,7 +1048,7 @@ def use_nilearn(
 
         # Ask nilearn to compute our p-values, and apply tfce if tfce==True.
         # TODO: Consider using nilearn.glm.second_level.non_parametric_inference() instead
-        response: dict[str, np.ndarray] = nilearn.mass_univariate.permuted_ols(
+        permuted_ols_response: dict[str, np.ndarray] = nilearn.mass_univariate.permuted_ols(
             tested_vars=tested_input,  # ksads
             target_vars=target_input,  # voxels
             confounding_vars=confounding_input,  # e.g., interview_age
@@ -1062,8 +1063,29 @@ def use_nilearn(
             threshold=threshold,
             output_type=output_type,
         )
+
+        # Compute the regression coefficients (that yielded the t-stats and p-values from permuted_ols).
+        # tested_input.shape == (number_images, number_ksads)
+        # confounding_input.shape == (number_images, number_confounding_vars)
+        # target_input.shape == (number_images, number_voxels)
+        Y: np.ndarray = target_input
+        print(f"{Y.shape = }")
+        # Loop over the tested variables
+        print(f"{tested_input.shape = }")
+        tested_vars_beta: list[np.ndarray] = []
+        for tested_var in tested_input.T:
+            X: np.ndarray = np.hstack((tested_var.reshape(-1, 1), confounding_input))
+            olsmodel: nilearn.glm.OLSModel = nilearn.glm.OLSModel(X)
+            fit: nilearn.glm.RegressionResults = olsmodel.fit(Y)
+            betas: np.ndarray = fit.theta
+            tested_var_beta: np.ndarray = betas[0, :]
+            tested_vars_beta.append(tested_var_beta)
+            del X, olsmodel, fit, betas, tested_var_beta
+        all_betas: np.ndarray = np.vstack(tested_vars_beta)
+        print(f"{all_betas.shape = }")
         # Record the response of nilearn for this subtype (e.g., "fa" or "md")
-        all_subtypes[image_subtype] = response
+        all_subtypes[image_subtype] = {"permuted_ols": permuted_ols_response, "glm_ols": all_betas}
+
     return all_subtypes
 
 
@@ -1141,6 +1163,8 @@ tested_table_input = ksads_filename_to_dataframe(file_mh_y_ksads_ss_input)
 # See https://nilearn.github.io/dev/modules/generated/nilearn.masking.compute_brain_mask.html
 target_img = nibabel.load(compute_white_matter_mask_from_file)
 white_matter_mask_affine = target_img.affine
+print("white_matter_mask_affine =")
+print(repr(white_matter_mask_affine))
 white_matter_mask_input = nilearn.masking.compute_brain_mask(
     target_img=target_img,
     threshold=mask_threshold_global,
@@ -1177,7 +1201,7 @@ else:
 
 
 start = time.time()
-output_voxels_by_subtype: dict[str, dict[str, np.ndarray]] = use_nilearn(
+output_voxels_by_subtype: dict[str, dict[str, Any]] = use_nilearn(
     confounding_keys_input,
     confounding_table_input,
     tested_keys_input,
@@ -1194,8 +1218,10 @@ print(f"Computed all voxels in time {time.time() - start}s")
 
 # Show both image types: ['fa', 'md']
 print(f"{list(output_voxels_by_subtype.keys()) = }")
-# Show returned data types: ['t', 'logp_max_t', 'h0_max_t']
+# Show returned data types: ['permuted_ols', 'glm_ols']
 print(f"{list(output_voxels_by_subtype['fa'].keys()) = }")
+# Show returned data tables: ['t', 'logp_max_t', 'h0_max_t']
+print(f"{list(output_voxels_by_subtype['fa']['permuted_ols'].keys()) = }")
 
 # We used use_nilearn().  Show some values that might help us to sanity check these outputs.  nilearn returned only
 # voxels in the white matter, so we construct images that include background.
@@ -1209,31 +1235,33 @@ if gamma != 1.0:
     print(f"Using contrast adjustment with {gamma = }")
 for subtype_key, subtype_value in output_voxels_by_subtype.items():
     print(f"## {subtype_key = }")
-    for table in subtype_value.keys():
+    permuted_ols_value: dict[str, np.ndarray] = cast(dict[str, np.ndarray], subtype_value["permuted_ols"])
+    for table_key, table_value in permuted_ols_value.items():
         # The three types of table are ['t', 'logp_max_t', 'h0_max_t'].  We're probably most interested in
         # 'logp_max_t'.
-        print(f"#### table: {table = }")
+        print(f"#### table: {table_key = }")
         # Show the shape of this output
-        print(f"output_voxels_by_subtype[{subtype_key!r}][{table!r}].shape = {subtype_value[table].shape}")
+        print(f"output_voxels_by_subtype[{subtype_key!r}]['permuted_ols'][{table_key!r}].shape = {table_value.shape}")
         # Show the sum of all values of this output
-        print(f"np.sum(output_voxels_by_subtype[{subtype_key!r}][{table!r}]) = {np.sum(subtype_value[table])}")
+        print(
+            f"np.sum(output_voxels_by_subtype[{subtype_key!r}]['permuted_ols'][{table_key!r}]) = {np.sum(table_value)}"
+        )
         # Count how many of the values are not NaNs.
         print(
-            f"np.sum(~np.isnan(output_voxels_by_subtype[{subtype_key!r}][{table!r}])) = "
-            f"{np.sum(~np.isnan(subtype_value[table]))}"
+            f"np.sum(~np.isnan(output_voxels_by_subtype[{subtype_key!r}]['permuted_ols'][{table_key!r}])) = "
+            f"{np.sum(~np.isnan(table_value))}"
         )
         # Ask to see the whole table; though Python cuts out much of it
-        # print(
-        #     f"output_voxels_by_subtype[{subtype_key!r}][{table!r}] = "
-        #     f"{subtype_value[table]}"
-        # )
+        # print(f"output_voxels_by_subtype[{subtype_key!r}]['permuted_ols'][{table_key!r}] = {table_value}")
     print("#### image information")
-    number_tested_vars = subtype_value["logp_max_t"].shape[0]
+    number_tested_vars = permuted_ols_value["logp_max_t"].shape[0]
     # We will make an output image for each tested variable (i.e., each KSADS variable).  Background is zeros.
     output_images_for_subtype: np.ndarray
     output_images_for_subtype = np.zeros((number_tested_vars, *white_matter_mask_input.get_fdata().shape))
     # Forground is from nilearn
-    output_images_for_subtype.reshape(number_tested_vars, -1)[:, white_matter_indices] = subtype_value["logp_max_t"]
+    output_images_for_subtype.reshape(number_tested_vars, -1)[:, white_matter_indices] = permuted_ols_value[
+        "logp_max_t"
+    ]
     # Stash the image into a dictionary that we are building
     output_images_by_subtype[subtype_key] = output_images_for_subtype
     # Show the shape of the image
@@ -1284,42 +1312,63 @@ for subtype_key, subtype_value in output_voxels_by_subtype.items():
             maxima: list[tuple[int, int, int]] = find_local_maxima(output_image, 0.1, 3)
             print("#### Maxima information")
             print(f"{subtype_key!r} image for {tested_keys_input[i]!r}")
-            for xyz in maxima:
-                show_maximum_using_partition(xyz, output_image, fa_partition_voxels, fa_partition_lookup)
+            # for xyz in maxima:
+            #     show_maximum_using_partition(xyz, output_image, fa_partition_voxels, fa_partition_lookup)
             for xyz in maxima:
                 show_maximum_using_cloud(xyz, output_image, fa_cloud_voxels, fa_cloud_lookup, threshold=0.1)
         import IPython
 
         shell = IPython.get_ipython()
         if shell and shell.__class__.__name__ == "ZMQInteractiveShell":
-            shapex, shapey, shapez = output_image.shape
             # Run this code if within Jupyter
+            # TODO: Also display betas
+            shapex, shapey, shapez = output_image.shape
             # For each tested variable (i.e., each KSADS variable), we'll have one X slice, one Y slice, and one Z
             # slice.
-            print(f"{subtype_key!r} image X={bestX[i]} slice for {tested_keys_input[i]!r}")
+            print(f"X={bestX[i]} {subtype_key!r} sagittal slice from L (A->P by I->S) for {tested_keys_input[i]!r}")
             slice_2d = brain_voxels[bestX[i], :, :, :].copy() if faYes else np.zeros((shapey, shapez, 3))
             # Add gamma corrected output to the green channel
             slice_2d[:, :, 1] += np.power(output_image[bestX[i], :, :], gamma)
             slice_2d = np.clip(slice_2d, 0, 1)
-            matplotlib.pyplot.imshow(slice_2d)
+            # Note that white_matter_mask_affine informs us of departures from RAS.
+            # TODO: Don't assume that white_matter_mask_affine is diagonal
+            # Mimicking 3D Slicer, we want to output this sagittal slice from the left, as x=posterior by y=superior.
+            if white_matter_mask_affine[1, 1] > 0:
+                slice_2d = slice_2d[::-1, :, :]
+            if white_matter_mask_affine[2, 2] < 0:
+                slice_2d = slice_2d[:, ::-1, :]
+            # matplotlib.pyplot.imshow uses [row, column] (i.e., [y, x])
+            matplotlib.pyplot.imshow(np.swapaxes(slice_2d, 0, 1), origin="lower")
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
-            print(f"{subtype_key!r} image Y={bestY[i]} slice for {tested_keys_input[i]!r}")
+            print(f"Y={bestY[i]} {subtype_key!r} coronal slice from A (R->L, I->S) for {tested_keys_input[i]!r}")
             slice_2d = brain_voxels[:, bestY[i], :, :].copy() if faYes else np.zeros((shapex, shapez, 3))
             # Add gamma corrected output to the green channel
             slice_2d[:, :, 1] += np.power(output_image[:, bestY[i], :], gamma)
             slice_2d = np.clip(slice_2d, 0, 1)
-            matplotlib.pyplot.imshow(slice_2d, cmap="gray")
+            # Mimicking 3D Slicer, we want to output this coronal slice from the anterior, as x=left by y=superior
+            if white_matter_mask_affine[0, 0] > 0:
+                slice_2d = slice_2d[::-1, :, :]
+            if white_matter_mask_affine[2, 2] < 0:
+                slice_2d = slice_2d[:, ::-1, :]
+            # matplotlib.pyplot.imshow uses [row, column] (i.e., [y, x])
+            matplotlib.pyplot.imshow(np.swapaxes(slice_2d, 0, 1), origin="lower")
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
-            print(f"{subtype_key!r} image Z={bestZ[i]} slice for {tested_keys_input[i]!r}")
+            print(f"Z={bestZ[i]} {subtype_key!r} axial slice from I (R->L, P->A) for {tested_keys_input[i]!r}")
             slice_2d = brain_voxels[:, :, bestZ[i], :].copy() if faYes else np.zeros((shapex, shapey, 3))
             # Add gamma corrected output to the green channel
             slice_2d[:, :, 1] += np.power(output_image[:, :, bestZ[i]], gamma)
             slice_2d = np.clip(slice_2d, 0, 1)
-            matplotlib.pyplot.imshow(slice_2d, cmap="gray")
+            # Mimicking 3D Slicer, we want to output this axial slice from the inferior, as x=left by y=anterior
+            if white_matter_mask_affine[0, 0] > 0:
+                slice_2d = slice_2d[::-1, :, :]
+            if white_matter_mask_affine[1, 1] < 0:
+                slice_2d = slice_2d[:, ::-1, :]
+            # matplotlib.pyplot.imshow uses [row, column] (i.e., [y, x])
+            matplotlib.pyplot.imshow(np.swapaxes(slice_2d, 0, 1), origin="lower")
             # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
