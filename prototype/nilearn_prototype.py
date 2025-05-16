@@ -71,11 +71,17 @@
 # * $D_{ic}$ is the input-data value of the $c$ term for image $i$.
 # * $\epsilon_i$ is the error term for image $i$.  The regression minimizes the sum of squares of these values.
 #
-# The regression is solved and the return value is
-# $\log_{10}(1 / \operatorname{pvalue}(\operatorname{tstatistic}(\beta_t)))$, where $\beta_t$ is the coefficient for the
-# tested variable and the t-statistic is quantifying the belief that $\beta_t \ne 0$.  Furthermore, nilearn adjusts for
-# multiple testing.  A value of $2.0$ indicates a p-value of 1%, a value of $1.3$ indicates a p-value of 5%, a value of
-# $1.0$ indicates a p-value of 10%, and so on.
+# The regression is solved and the return value for a voxel for a tested variable is
+# $$-\log_{10}(\operatorname{pvalue}(\operatorname{tstatistic}(\beta_T)))\,,$$
+# where
+# * $\beta_T$ is the coefficient for the tested variable,
+# * the t-statistic is quantifying the belief that $\beta_T \ne 0$, and
+# * the p-value is estimated via random permutations of the null hypothesis ($\beta_T = 0$) residuals $\{\epsilon_i\}$
+#   in the manner of Freedman-Lane (see [Wingler NeuroImage 2014](https://doi.org/10.1016/j.neuroimage.2014.01.060),
+#   p. 385 for a good description).
+#
+# A value of $2.0$ indicates a p-value of 1%, a value of $1.3$ indicates a p-value of 5%, a value of $1.0$ indicates a
+# p-value of 10%, and so on.
 #
 # ## Individual steps
 # In addition to showing a high-level approach to hypothesis generation, this is functioning code that also provides
@@ -153,6 +159,7 @@
 from __future__ import annotations
 
 import functools
+import itertools
 import math
 import os
 import re
@@ -924,8 +931,7 @@ def show_maximum_using_partition(
                 break
     print(
         f"Found local maximum -log_10 p(t-stat)={round(1000.0 * log10_pvalue[x, y, z]) / 1000.0}"
-        f" at ({x}, {y}, {z} = {shapez - 1}-{shapez - 1 - z})"
-        f" {where} region {fa_partition_lookup[region_index]} ({region_index})"
+        f" at ({x}, {y}, {z}) {where} region {fa_partition_lookup[region_index]} ({region_index})"
     )
 
 
@@ -942,7 +948,7 @@ def show_maximum_using_cloud(
     argsort: np.ndarray = np.argsort(cloud_here)[::-1]
     print(
         f"Found local maximum -log_10 p(t-stat)={round(1000.0 * log10_pvalue[x, y, z]) / 1000.0}"
-        f" at ({x}, {y}, {z} = {shapez - 1}-{shapez - 1 - z} in regions:"
+        f" at ({x}, {y}, {z}) in regions:"
     )
     # Show those that exceed threshold; showing at least 2 regions
     for cloud_index in [argsort[i] for i in range(len(argsort)) if i < 2 or cloud_here[argsort[i]] >= threshold]:
@@ -950,6 +956,54 @@ def show_maximum_using_cloud(
         print(
             f"    {fa_cloud_lookup[region]} ({region}) confidence = {round(100000.0 * cloud_here[cloud_index]) / 1000}%"
         )
+
+
+def best_axis_alignment(transform_matrix: np.array) -> tuple[np.array, np.array]:
+    # The input matrix maps column vector (i,j,k) to column vector (R,A,S).  (It is (i,j,k,1) to (R,A,S,1), if affine.)
+    # In case it is an affine matrix, use just the upper-left 3 by 3.
+    transform_matrix = transform_matrix[0:3, 0:3]
+    # Normalize the column vectors
+    transform_matrix = transform_matrix / np.linalg.norm(transform_matrix, axis=0)
+    # Compare permutations of the rows with the identity matrix
+    best_perm = None
+    best_perm_value = -100
+    for perm in itertools.permutations(range(3)):
+        new_perm_value = np.sum(np.abs(transform_matrix[perm, range(3)]))
+        if best_perm_value < new_perm_value:
+            best_perm_value = new_perm_value
+            best_perm = perm
+    # For permuted the data, signs == True means R, A, S (respectively); signs == False means L, P, I.
+    signs = transform_matrix[best_perm, range(3)] > 0.0
+    return np.array(best_perm), np.array(signs)
+
+
+def orient_data_for_slices(transform_matrix: np.array, data_matrix: np.array) -> dict[str, np.array]:
+    best_perm, signs = best_axis_alignment(transform_matrix)
+    # Permute spatial axes, but keep the color channel last
+    data_matrix = np.transpose(data_matrix, (*best_perm, 3))
+
+    # Sagittal: Want axis 0 to be L->R or R->L, AS IS; axis 1 is A->P; axis 2 is I->S; axis 3 is color
+    sagittal_matrix = np.transpose(data_matrix, (0, 1, 2, 3))
+    if signs[1]:
+        sagittal_matrix = sagittal_matrix[:, ::-1, :, :]
+    if not signs[2]:
+        sagittal_matrix = sagittal_matrix[:, :, ::-1, :]
+
+    # Coronal: Want axis 0 to be P->A or A->P, AS IS; axis 1 is R-> L; axis 2 is I->S; axis 3 is color
+    coronal_matrix = np.transpose(data_matrix, (1, 0, 2, 3))
+    if signs[0]:
+        coronal_matrix = coronal_matrix[:, ::-1, :, :]
+    if not signs[2]:
+        coronal_matrix = coronal_matrix[:, :, ::-1, :]
+
+    # Axial: Want axis 0 to be I->S or S->I, AS IS; axis 1 is R->L; axis 2 is P->A; axis 3 is color
+    axial_matrix = np.transpose(data_matrix, (2, 0, 1, 3))
+    if signs[0]:
+        axial_matrix = axial_matrix[:, ::-1, :, :]
+    if not signs[1]:
+        axial_matrix = axial_matrix[:, :, ::-1, :]
+
+    return {"sagittal": sagittal_matrix, "coronal": coronal_matrix, "axial": axial_matrix}
 
 
 # How we might process the inputs using nilearn.mass_univariate.permuted_ols()
@@ -1294,13 +1348,14 @@ for subtype_key, subtype_value in output_voxels_by_subtype.items():
         fa_cloud_voxels: np.ndarray = fa_cloud_data["voxels"].astype(np.float64)
         fa_cloud_lookup: dict[int, str] = {d["labelValue"]: d["name"] for d in fa_cloud_data["segments"]}
         del fa_cloud_data
-        # Load in brain for output background
-        brain_data: dict[str, Any] = slicerio.read_segmentation(compute_white_matter_mask_from_file)
-        brain_voxels: np.ndarray = brain_data["voxels"].astype(np.float64)
-        brain_voxels = brain_voxels / np.max(brain_voxels)  # max is now 1, to scale to -log10(10%)==1
-        # Change brain_voxels to gray in RGB.  Matplotlib expects color to be the last dimension
-        brain_voxels = np.stack((brain_voxels,) * 3, axis=-1)
-        del brain_data
+    # Load in brain for output background.
+    # TODO: Let's not use FA brain for MD images
+    brain_data: dict[str, Any] = slicerio.read_segmentation(compute_white_matter_mask_from_file)
+    brain_voxels: np.ndarray = brain_data["voxels"].astype(np.float64)
+    brain_voxels = brain_voxels / np.max(brain_voxels)  # max is now 1, to scale to -log10(10%)==1
+    # Change brain_voxels to gray in RGB.  Matplotlib expects color to be the last dimension
+    brain_voxels = np.stack((brain_voxels,) * 3, axis=-1)
+    del brain_data
 
     print()
     for i in range(number_tested_vars):
@@ -1325,52 +1380,33 @@ for subtype_key, subtype_value in output_voxels_by_subtype.items():
             shapex, shapey, shapez = output_image.shape
             # For each tested variable (i.e., each KSADS variable), we'll have one X slice, one Y slice, and one Z
             # slice.
-            print(f"X={bestX[i]} {subtype_key!r} sagittal slice from L (A->P by I->S) for {tested_keys_input[i]!r}")
-            slice_2d = brain_voxels[bestX[i], :, :, :].copy() if faYes else np.zeros((shapey, shapez, 3))
+
+            show_voxels = brain_voxels.copy()
             # Add gamma corrected output to the green channel
-            slice_2d[:, :, 1] += np.power(output_image[bestX[i], :, :], gamma)
-            slice_2d = np.clip(slice_2d, 0, 1)
-            # Note that white_matter_mask_affine informs us of departures from RAS.
-            # TODO: Don't assume that white_matter_mask_affine is diagonal
-            # Mimicking 3D Slicer, we want to output this sagittal slice from the left, as x=posterior by y=superior.
-            if white_matter_mask_affine[1, 1] > 0:
-                slice_2d = slice_2d[::-1, :, :]
-            if white_matter_mask_affine[2, 2] < 0:
-                slice_2d = slice_2d[:, ::-1, :]
-            # matplotlib.pyplot.imshow uses [row, column] (i.e., [y, x])
+            show_voxels[:, :, :, 1] += np.power(output_image[:, :, :], gamma)
+            show_voxels = np.clip(show_voxels, 0, 1)
+            slices_voxels = orient_data_for_slices(white_matter_mask_affine, show_voxels)
+
+            print(f"X={bestX[i]} {subtype_key!r} sagittal slice from L (A->P by I->S) for {tested_keys_input[i]!r}")
+            slice_2d = slices_voxels["sagittal"][bestX[i], :, :, :]
+            # matplotlib.pyplot.imshow uses [row, column, color] (i.e., [y, x, color])
             matplotlib.pyplot.imshow(np.swapaxes(slice_2d, 0, 1), origin="lower")
-            # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
             print(f"Y={bestY[i]} {subtype_key!r} coronal slice from A (R->L, I->S) for {tested_keys_input[i]!r}")
-            slice_2d = brain_voxels[:, bestY[i], :, :].copy() if faYes else np.zeros((shapex, shapez, 3))
-            # Add gamma corrected output to the green channel
-            slice_2d[:, :, 1] += np.power(output_image[:, bestY[i], :], gamma)
-            slice_2d = np.clip(slice_2d, 0, 1)
-            # Mimicking 3D Slicer, we want to output this coronal slice from the anterior, as x=left by y=superior
-            if white_matter_mask_affine[0, 0] > 0:
-                slice_2d = slice_2d[::-1, :, :]
-            if white_matter_mask_affine[2, 2] < 0:
-                slice_2d = slice_2d[:, ::-1, :]
-            # matplotlib.pyplot.imshow uses [row, column] (i.e., [y, x])
+            slice_2d = slices_voxels["coronal"][bestY[i], :, :, :]
+            # matplotlib.pyplot.imshow uses [row, column, color] (i.e., [y, x, color])
             matplotlib.pyplot.imshow(np.swapaxes(slice_2d, 0, 1), origin="lower")
-            # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
             print(f"Z={bestZ[i]} {subtype_key!r} axial slice from I (R->L, P->A) for {tested_keys_input[i]!r}")
-            slice_2d = brain_voxels[:, :, bestZ[i], :].copy() if faYes else np.zeros((shapex, shapey, 3))
-            # Add gamma corrected output to the green channel
-            slice_2d[:, :, 1] += np.power(output_image[:, :, bestZ[i]], gamma)
-            slice_2d = np.clip(slice_2d, 0, 1)
-            # Mimicking 3D Slicer, we want to output this axial slice from the inferior, as x=left by y=anterior
-            if white_matter_mask_affine[0, 0] > 0:
-                slice_2d = slice_2d[::-1, :, :]
-            if white_matter_mask_affine[1, 1] < 0:
-                slice_2d = slice_2d[:, ::-1, :]
-            # matplotlib.pyplot.imshow uses [row, column] (i.e., [y, x])
+            slice_2d = slices_voxels["axial"][bestZ[i], :, :, :]
+            # matplotlib.pyplot.imshow uses [row, column, color] (i.e., [y, x, color])
             matplotlib.pyplot.imshow(np.swapaxes(slice_2d, 0, 1), origin="lower")
-            # matplotlib.pyplot.colorbar()
             matplotlib.pyplot.show()
 
+            del show_voxels, slices_voxels
+
+    del brain_voxels
     if faYes:
-        del fa_partition_voxels, fa_partition_lookup, fa_cloud_voxels, fa_cloud_lookup, brain_voxels
+        del fa_partition_voxels, fa_partition_lookup, fa_cloud_voxels, fa_cloud_lookup
