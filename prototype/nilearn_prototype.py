@@ -126,6 +126,11 @@
 # * **merge_confounding_table:** demonstrates how to combine confounding variables data with associated image metadata.
 # * **find_good_slice:** demonstrates how to find an interesting X-, Y-, or Z-slice in the output data.
 # * **find_local_maxima:** demonstrates how to find voxels that are local maxima in terms of statistical significance.
+# * **show_maximum_using_partition:** labels local maxima based upon brain segment with strongest claim to the voxel.
+# * **show_maximum_using_cloud:** labels local maxima based upon all brain segments with non-trivial claim to the voxel.
+# * **best_axis_alighment:** Tries all permuations and reflections of axes to best match right-anterior-superior.
+# * **orient_data_for_slices:** Applies permutations and reflections to display sagittal, coronal, and axial slices as
+#   would 3D Slicer.
 # * **use_nilearn:** demonstrates how to read and preprocess all the input, use the `nilearn` library for processing,
 #   and postprocess the output.
 #
